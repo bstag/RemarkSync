@@ -76,10 +76,13 @@ Things to sanity-check against your own tablet backup on first use:
   top-relative). No typed text existed in the backup this was developed
   against, so if typed text shows in the wrong place on your files the
   one-line fix is `TEXT_Y_ORIGIN` in `rmdata.py`.
-- **Base pages that are not 3:4** (US Letter, small-format books) are
-  fitted inside the paper at their own aspect ratio and centred, which is
-  how the tablet displays them; ink alignment on such pages has not been
-  checked against a device since none of them carried ink.
+- **Base PDF pages** are drawn where the tablet draws them: at a fixed
+  3.153 tablet pixels per PDF point, centred horizontally, top at the
+  page top (physical size on the tablet's 157 mm screen; see
+  `docs/adr/0002-base-pdf-pages-at-the-tablets-fixed-scale.md`). This was
+  fitted from the tablet's own snap-highlight rectangles on three PDFs to
+  about a pixel. US Letter pages therefore come out wider than the
+  screen, and the canvas grows to show them whole.
 - **.rmdoc produced by `compile`** is minimal (`.metadata`, `.content`,
   `pagedata`, `0/0.rm`, `0/metadata.json`). If a tablet firmware rejects
   it, compare with a real device-exported `.rmdoc` and extend

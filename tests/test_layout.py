@@ -7,7 +7,7 @@ where the tablet put it and the canvas grows around the paper.
 
 import pytest
 
-from remarksync.layout import BOTTOM_MARGIN, fit_rect, lay_out
+from remarksync.layout import BOTTOM_MARGIN, PDF_SCALE, base_page_rect, lay_out
 from remarksync.rmdata import PAGE_HEIGHT, PAGE_WIDTH, GlyphHighlight, PageModel, Stroke, TextBlock
 
 W, H = PAGE_WIDTH, PAGE_HEIGHT
@@ -102,40 +102,66 @@ def test_highlights_are_shifted_with_the_ink():
     assert frame.page.highlights[0].rectangles == [(202, 1480, 380, 34)]
 
 
-# ------------------------------------------------------------- underlay
+# ------------------------------------------------------------- base pages
+
+# The tablet places a base PDF at a fixed scale (tablet px per PDF point),
+# centred on the screen width with its top at y=0. The fitted value comes
+# from the tablet's own snap-highlight rectangles; these numbers are what
+# those rectangles say.
 
 
-def test_base_document_page_is_drawn_instead_of_template():
-    frame = lay_out(PageModel(), template="ruled", base_size=(432, 576))
-    assert frame.canvas_size == (W, H)
+def test_base_page_is_the_paper_and_the_underlay():
+    frame = lay_out(PageModel(), template="ruled", base_size=(432, 576))  # the NIV bible, 3:4
+    w, h = 432 * PDF_SCALE, 576 * PDF_SCALE
     assert frame.template is None
-    assert frame.underlay == (0, 0, W, H)  # 3:4 page fills the paper exactly
+    assert frame.paper == pytest.approx((0, 0, w, h))  # canvas starts at the page's left edge
+    assert frame.underlay == frame.paper
+    assert frame.canvas_size == pytest.approx((w, h))
     assert frame.dividers == []
 
 
-def test_underlay_keeps_base_page_aspect_letter_fits_by_width():
-    frame = lay_out(PageModel(), base_size=(612, 792))
-    x, y, w, h = frame.underlay
-    assert w == W
-    assert h == pytest.approx(W * 792 / 612)
-    assert x == 0
-    assert y == pytest.approx((H - h) / 2)
+def test_base_page_placement_in_page_coordinates():
+    # a 3:4 page is 1362 px wide, so it sits 21 px in from the screen edge
+    x, y, w, h = base_page_rect((432, 576))
+    assert (w, h) == pytest.approx((1362.0, 1816.0), abs=0.5)
+    assert x == pytest.approx((PAGE_WIDTH - w) / 2)
+    assert y == 0
 
 
-def test_underlay_keeps_base_page_aspect_narrow_book_fits_by_height():
+def test_ink_stays_aligned_with_a_base_page_that_starts_off_screen():
+    # US Letter is wider than the screen: the page starts 263 px left of x=0
+    px, py, pw, ph = base_page_rect((612, 792))
+    assert px == pytest.approx(-262.7, abs=0.5)
+    page = PageModel(strokes=[stroke((100, 100), (200, 200))])
+    frame = lay_out(page, base_size=(612, 792))
+    assert frame.paper == pytest.approx((0, 0, pw, ph))
+    # ink written at screen x=100 is 100 - px from the page's left edge
+    assert frame.page.strokes[0].points[0] == pytest.approx((100 - px, 100))
+    assert frame.canvas_size == pytest.approx((pw, ph))
+
+
+def test_narrow_book_page_is_narrower_than_the_screen():
+    px, py, pw, ph = base_page_rect((379, 613))
+    assert pw < PAGE_WIDTH and px > 0
     frame = lay_out(PageModel(), base_size=(379, 613))
-    x, y, w, h = frame.underlay
-    assert h == pytest.approx(H)
-    assert w == pytest.approx(H * 379 / 613)
-    assert y == pytest.approx(0)
-    assert x == pytest.approx((W - w) / 2)
+    assert frame.paper == pytest.approx((0, 0, pw, ph))
+    assert frame.height == pytest.approx(ph)  # taller than the screen; canvas follows the page
 
 
-def test_underlay_follows_paper_after_overflow():
-    page = PageModel(strokes=[stroke((-100, 10), (10, 10))])
+def test_content_overflowing_a_base_page_grows_the_canvas():
+    px, py, pw, ph = base_page_rect((432, 576))
+    page = PageModel(strokes=[stroke((1500, 100), (1700, ph + 200))])
     frame = lay_out(page, base_size=(432, 576))
-    assert frame.underlay == (100, 0, W, H)
+    assert frame.width == pytest.approx(1700 - px)
+    assert frame.height == pytest.approx(ph + 200 + BOTTOM_MARGIN)
+    assert ((pw, 0), (pw, ph)) in [tuple(map(tuple, d)) for d in frame.dividers] or any(
+        abs(d[0][0] - pw) < 1e-6 for d in frame.dividers
+    )
+    assert any(abs(d[0][1] - ph) < 1e-6 for d in frame.dividers)
 
 
-def test_fit_rect_degenerate_size_returns_container():
-    assert fit_rect((0, 0), (5, 5, 10, 10)) == (5, 5, 10, 10)
+def test_highlights_are_shifted_with_the_base_page():
+    hl = GlyphHighlight(text="verse", rectangles=[(945, 1599, 103, 34)])
+    frame = lay_out(PageModel(highlights=[hl]), base_size=(432, 576))
+    px = base_page_rect((432, 576))[0]
+    assert frame.page.highlights[0].rectangles[0] == pytest.approx((945 - px, 1599, 103, 34))
