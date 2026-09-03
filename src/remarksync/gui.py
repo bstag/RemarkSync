@@ -6,10 +6,12 @@ widgets and slots, not library state.
 
 from __future__ import annotations
 
+import logging
 import sys
+import threading
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSettings, QTimer
+from PySide6.QtCore import QObject, QSettings, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
@@ -18,7 +20,6 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
-    QProgressDialog,
     QScrollArea,
     QSizePolicy,
     QSplitter,
@@ -32,9 +33,49 @@ from PySide6.QtWidgets import (
 
 from . import APP_NAME, __version__
 from .backup import DocItem, open_rmdoc
-from .library import Library, NoIndexError
+from .library import IndexReport, Library, NoIndexError
 from .mdcompile import markdown_to_rmdoc
 from .viewer import PageCanvas, PdfUnderlay
+
+log = logging.getLogger(__name__)
+
+
+class IndexWorker(QObject):
+    """Runs a Library index refresh on a worker thread.
+
+    The Library stays synchronous; this object is the only place that knows
+    about threads. Progress comes back as signals, cancellation goes in as
+    a flag checked between documents.
+    """
+
+    progressed = Signal(str, int)  # document name, documents done
+    finished = Signal(object)  # IndexReport
+    failed = Signal(str)
+
+    def __init__(self, library: Library, force: bool):
+        super().__init__()
+        self._library = library
+        self._force = force
+        self._cancel = threading.Event()
+        self._done = 0
+
+    def cancel(self) -> None:
+        self._cancel.set()
+
+    def run(self) -> None:
+        try:
+            refresh = self._library.rebuild_index if self._force else self._library.refresh_index
+            report = refresh(progress=self._step)
+        except Exception as exc:  # keep the UI alive whatever the indexer hit
+            log.exception("indexing failed")
+            self.failed.emit(str(exc))
+            return
+        self.finished.emit(report)
+
+    def _step(self, name: str) -> bool:
+        self._done += 1
+        self.progressed.emit(name, self._done)
+        return not self._cancel.is_set()
 
 
 class MainWindow(QMainWindow):
@@ -44,6 +85,8 @@ class MainWindow(QMainWindow):
         self.resize(1400, 900)
 
         self._library: Library | None = None
+        self._index_thread: QThread | None = None
+        self._index_worker: IndexWorker | None = None
         self._canvases: list[PageCanvas] = []
         self._underlay: PdfUnderlay | None = None
         self._scale = 0.62
@@ -75,7 +118,11 @@ class MainWindow(QMainWindow):
         add_action("Open .rmdoc…", self.open_rmdoc_action, "Ctrl+R", "Open a single .rmdoc archive")
         toolbar.addSeparator()
         add_action("Refresh", self.refresh, "F5")
-        add_action("Rebuild Search Index", self.rebuild_index, "Ctrl+I")
+        self.index_action = add_action(
+            "Update Search Index", self.update_index, "Ctrl+I",
+            "Index new and changed documents in the background (click again to cancel)",
+        )
+        add_action("Rebuild Search Index", self.rebuild_index, "Ctrl+Shift+I", "Re-index every document from scratch")
         add_action("Compile Markdown → .rmdoc…", self.compile_md_action, "Ctrl+M")
         toolbar.addSeparator()
         add_action("Zoom −", lambda: self.zoom(-0.1), "Ctrl+-")
@@ -136,6 +183,7 @@ class MainWindow(QMainWindow):
             if not chosen:
                 return
             path = Path(chosen)
+        self._stop_indexing()  # a running index belongs to the old library
         self._library = Library(path)
         self.settings.setValue("library_path", str(path))
         self._populate_tree()
@@ -223,24 +271,70 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------- search
 
+    @property
+    def is_indexing(self) -> bool:
+        return self._index_thread is not None and self._index_thread.isRunning()
+
+    def update_index(self) -> None:
+        """Index new and changed documents; a second click cancels."""
+        if self.is_indexing:
+            self.cancel_indexing()
+        else:
+            self._start_indexing(force=False)
+
     def rebuild_index(self) -> None:
+        """Re-index everything from scratch (cancels a running update first)."""
+        self._stop_indexing()
+        self._start_indexing(force=True)
+
+    def cancel_indexing(self) -> None:
+        if self._index_worker is not None:
+            self._index_worker.cancel()
+            self.statusBar().showMessage("Cancelling indexing…")
+
+    def _start_indexing(self, force: bool) -> None:
         if self._library is None:
             self.statusBar().showMessage("Open a library folder first.")
             return
-        progress = QProgressDialog("Building search index…", "Cancel", 0, max(1, len(self._library)), self)
-        progress.setWindowModality(Qt.WindowModal)
+        worker = IndexWorker(self._library, force)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progressed.connect(self._on_index_progress)
+        worker.finished.connect(self._on_index_finished)
+        worker.failed.connect(self._on_index_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        self._index_thread, self._index_worker = thread, worker
+        self.index_action.setText("Cancel Indexing")
+        self.statusBar().showMessage("Indexing…")
+        thread.start()
 
-        def step(name: str) -> bool:
-            progress.setValue(progress.value() + 1)
-            progress.setLabelText(f"Indexing {name}")
-            QApplication.processEvents()
-            return not progress.wasCanceled()
+    def _stop_indexing(self) -> None:
+        """Cancel a running index and wait for its thread to finish."""
+        if self._index_thread is None:
+            return
+        self.cancel_indexing()
+        self._index_thread.quit()
+        self._index_thread.wait(30_000)
+        self._index_thread, self._index_worker = None, None
+        self.index_action.setText("Update Search Index")
 
-        report = self._library.rebuild_index(progress=step)
-        if report.completed:
-            self.statusBar().showMessage(f"Index built: {report.pages} pages")
-        else:
-            self.statusBar().showMessage(f"Index build cancelled after {report.pages} pages")
+    def _on_index_progress(self, name: str, done: int) -> None:
+        total = len(self._library) if self._library else 0
+        self.statusBar().showMessage(f"Indexing {done}/{total}: {name}")
+
+    def _on_index_finished(self, report: IndexReport) -> None:
+        self.index_action.setText("Update Search Index")
+        state = "Index updated" if report.completed else "Indexing cancelled"
+        self.statusBar().showMessage(
+            f"{state}: {report.indexed} documents indexed ({report.pages} pages), "
+            f"{report.skipped} unchanged, {report.removed} removed"
+        )
+
+    def _on_index_failed(self, message: str) -> None:
+        self.index_action.setText("Update Search Index")
+        self.statusBar().showMessage(f"Indexing failed: {message}")
 
     def run_search(self) -> None:
         query = self.search_box.text().strip()
@@ -249,7 +343,7 @@ class MainWindow(QMainWindow):
         try:
             hits = self._library.search(query)
         except NoIndexError:
-            self.statusBar().showMessage("No search index — use “Rebuild Search Index” first (Ctrl+I).")
+            self.statusBar().showMessage("No search index — use “Update Search Index” first (Ctrl+I).")
             return
         self.results_list.clear()
         for hit in hits:
@@ -294,6 +388,11 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Compile failed: {exc}")
             return
         self.statusBar().showMessage(f"Compiled {path} — upload it via the tablet's USB web UI.")
+
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._stop_indexing()
+        super().closeEvent(event)
 
 
 def run() -> None:

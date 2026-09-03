@@ -62,6 +62,15 @@ def test_rebuild_index_then_search(backup_root):
     assert lib.search("zzznotfound") == []
 
 
+def test_refresh_index_only_touches_changed_documents(backup_root):
+    lib = Library(backup_root)
+    first = lib.refresh_index()
+    assert first.completed and first.indexed == 4
+    second = lib.refresh_index()
+    assert second.skipped >= 1  # Ink Notes has a lastModified and is unchanged
+    assert lib.search("quantum")
+
+
 def test_rebuild_index_can_be_cancelled(backup_root):
     lib = Library(backup_root)
     calls: list[str] = []
