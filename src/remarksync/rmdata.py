@@ -1,8 +1,17 @@
-"""Parse .rm page files into a pure-Python page model.
+"""Decode .rm page files into a pure-Python page model.
 
-The heavy lifting of the binary format is done by the ``rmscene`` library;
-this module turns its scene trees into simple dataclasses that the renderer,
-search indexer and exporters consume. No Qt dependencies here.
+This is the *page decoder*: bytes in, a ``PageModel`` out, in **page
+coordinates** (x from the left edge of the tablet page, y from its top,
+both in tablet pixels). Nothing here knows where the page will be drawn,
+whether the canvas should grow, or which template sits behind it; that is
+the job of :mod:`remarksync.layout`. No Qt dependencies here.
+
+Two adapters sit behind the one interface:
+
+* v6 (software 3.x) — parsed by ``rmscene``; x is stored centre-relative
+  and shifted here so every caller sees the same frame.
+* v5 (software 2.x "version=5" .lines) — a tolerant scanner over the
+  binary layout, which was extended in place around firmware 2.13.
 """
 
 from __future__ import annotations
@@ -16,6 +25,8 @@ from pathlib import Path
 from rmscene import read_tree
 from rmscene import scene_items as si
 from rmscene.text import TextDocument
+
+from .textmetrics import LINE_HEIGHTS, TEXT_TOP_Y, paragraphs_height
 
 log = logging.getLogger(__name__)
 
@@ -65,16 +76,19 @@ PEN_WIDTHS: dict[str, float] = {
 HIGHLIGHTER_TOOLS = {"HIGHLIGHTER_1", "HIGHLIGHTER_2", "SHADER", "MARKER_1", "MARKER_2"}
 ERASER_TOOLS = {"ERASER", "ERASER_AREA"}
 
-# reMarkable software 2.x wrote "version=5" .lines files; the format was
-# extended in-place around software 2.13 (extra per-line records), so we
-# parse it with a tolerant scanner rather than a strict grammar.
+# Typed text blocks store pos_y relative to the page centre (observed on
+# device: rmscene's default pos_y=234 lands mid-page, and -780 lands near the
+# top), whereas ink y is measured from the page top (verified against the
+# reMarkable desktop app). This is the only place that difference lives.
+TEXT_Y_ORIGIN = PAGE_HEIGHT / 2
+
 V5_HEADER = b"reMarkable .lines file, version=5"
 V5_COLORS = {0: "BLACK", 1: "GRAY", 2: "WHITE"}
 
 
 @dataclass
 class Stroke:
-    """A pen stroke: polyline in tablet page coordinates."""
+    """A pen stroke: polyline in page coordinates."""
 
     points: list[tuple[float, float]]
     color: str  # hex
@@ -105,29 +119,50 @@ class GlyphHighlight:
 
 @dataclass
 class PageModel:
+    """Everything on one page, in page coordinates. Positions are exactly
+    where the tablet put them; see :mod:`remarksync.layout` for where the
+    page ends up on a canvas."""
+
     strokes: list[Stroke] = field(default_factory=list)
     texts: list[TextBlock] = field(default_factory=list)
     highlights: list[GlyphHighlight] = field(default_factory=list)
     error: str | None = None
-    # content size in page units after normalisation (width capped at the
-    # page; height grows for endless-canvas journal pages)
-    content_size: tuple[float, float] = (PAGE_WIDTH, PAGE_HEIGHT)
-    # where the PDF page's top-left corner sits in canvas coordinates —
-    # non-zero when ink was written beyond the page sides
-    origin: tuple[float, float] = (0.0, 0.0)
 
     @property
     def has_content(self) -> bool:
         return bool(self.strokes or self.texts or self.highlights)
 
 
-# v6 text-block layout metrics (from rmc, the maintained reference exporter)
-TEXT_TOP_Y = -88
-LINE_HEIGHTS = {
-    "PLAIN": 70, "BULLET": 35, "BULLET2": 35, "BOLD": 70,
-    "HEADING": 150, "CHECKBOX": 35, "CHECKBOX_CHECKED": 35,
-}
-TOP_MARGIN = 24.0
+def decode_page(source: Path | bytes) -> PageModel:
+    """Decode a .rm file (path or raw bytes) into a PageModel.
+
+    Never raises for bad input: an unparseable page comes back empty with
+    ``error`` set so the caller stays usable.
+    """
+    if isinstance(source, (bytes, bytearray)):
+        data = bytes(source)
+    else:
+        data = Path(source).read_bytes()
+
+    if data[:33] == V5_HEADER:
+        return _decode_v5(data)
+
+    try:
+        tree = read_tree(io.BytesIO(data))
+    except Exception as exc:
+        log.warning("could not parse %s: %s", source if isinstance(source, Path) else "<bytes>", exc)
+        return PageModel(error=str(exc))
+    return _decode_v6(tree)
+
+
+def page_text(page: PageModel) -> str:
+    """All searchable text of a page: typed text plus PDF-highlight text."""
+    parts = [t.text for t in page.texts if t.text]
+    parts += [h.text for h in page.highlights if h.text]
+    return "\n".join(parts).strip()
+
+
+# ---------------------------------------------------------------- v6 adapter
 
 
 def _visible(group: si.Group) -> bool:
@@ -167,36 +202,13 @@ def _group_anchor(group: si.Group, anchor_pos: dict) -> tuple[float, float]:
     return float(ax), float(ay)
 
 
-def parse_rm(source: Path | bytes, pdf_mode: bool = False) -> PageModel:
-    """Parse a .rm file (path or raw bytes) into a PageModel.
-
-    Notebook pages are normalised onto the page (content centred, y from
-    the top margin, height grows for endless-canvas pages). PDF annotation
-    pages (``pdf_mode=True``) keep their true position relative to the
-    base PDF: x is centre-relative in v6 and gets the +half-page shift, y
-    is already measured from the page top, and no normalisation is applied
-    so ink stays on whatever it annotates.
-    """
-    if isinstance(source, (bytes, bytearray)):
-        data = bytes(source)
-    else:
-        data = Path(source).read_bytes()
-
-    if data[:33] == V5_HEADER:
-        page = _parse_v5(data)
-        if not pdf_mode:
-            _normalise(page)
-        return page
-
-    try:
-        tree = read_tree(io.BytesIO(data))
-    except Exception as exc:  # unparseable page: render as blank, stay usable
-        log.warning("could not parse %s: %s", source if isinstance(source, Path) else "<bytes>", exc)
-        return PageModel(error=str(exc))
-
+def _decode_v6(tree) -> PageModel:
+    """v6 stores x centre-relative and ink y from the page top (rmc's default
+    bounding box is x in [-W/2, W/2], y in [0, H]); shift x, and text y by
+    ``TEXT_Y_ORIGIN``, so the model is in page coordinates."""
     page = PageModel()
     anchor_pos = _anchor_positions(tree.root_text)
-    y_shift = 0.0 if pdf_mode else PAGE_HEIGHT / 2
+    x_shift = PAGE_WIDTH / 2
 
     def visit(item: si.SceneItem, ax: float, ay: float, visible: bool) -> None:
         if isinstance(item, si.Group):
@@ -217,10 +229,7 @@ def parse_rm(source: Path | bytes, pdf_mode: bool = False) -> PageModel:
             page.highlights.append(
                 GlyphHighlight(
                     text=item.text or "",
-                    rectangles=[
-                        (x + PAGE_WIDTH / 2, y + (0.0 if pdf_mode else y_shift), w, h)
-                        for x, y, w, h in rects
-                    ],
+                    rectangles=[(x + x_shift, y, w, h) for x, y, w, h in rects],
                 )
             )
         elif isinstance(item, si.Text):
@@ -234,8 +243,7 @@ def parse_rm(source: Path | bytes, pdf_mode: bool = False) -> PageModel:
         base_w = PEN_WIDTHS.get(tool, 2.5)
         page.strokes.append(
             Stroke(
-                # v6 x is centre-relative; y depends on page kind (see docstring)
-                points=[(p.x + PAGE_WIDTH / 2 + ax, p.y + y_shift + ay) for p in line.points],
+                points=[(p.x + x_shift + ax, p.y + ay) for p in line.points],
                 color=color,
                 width=max(0.5, base_w * (line.thickness_scale or 1.0)),
                 highlighter=tool in HIGHLIGHTER_TOOLS,
@@ -244,22 +252,15 @@ def parse_rm(source: Path | bytes, pdf_mode: bool = False) -> PageModel:
         )
 
     def text_block(t: si.Text, ax: float, ay: float) -> TextBlock:
-        block = TextBlock(
-            text="",
-            pos_x=t.pos_x + PAGE_WIDTH / 2 + ax,
-            pos_y=t.pos_y + y_shift + ay,
-            width=t.width,
-        )
+        block = TextBlock(text="", pos_x=t.pos_x + x_shift + ax, pos_y=t.pos_y + TEXT_Y_ORIGIN + ay, width=t.width)
         try:
             doc = TextDocument.from_scene_item(t)
-            height = 0.0
             for para in doc.contents:
                 style = getattr(para.style, "value", None)
                 style_name = getattr(style, "name", "PLAIN")
                 block.paragraphs.append((style_name, str(para)))
-                height += LINE_HEIGHTS.get(style_name, 70)
             block.text = "\n".join(text for _, text in block.paragraphs)
-            block.height = height
+            block.height = paragraphs_height(style for style, _ in block.paragraphs)
         except Exception as exc:
             log.debug("styled text extraction failed: %s", exc)
             block.height = LINE_HEIGHTS["PLAIN"] * max(1, block.text.count("\n") + 1)
@@ -269,73 +270,22 @@ def parse_rm(source: Path | bytes, pdf_mode: bool = False) -> PageModel:
         visit(tree.root, 0.0, 0.0, True)
     if tree.root_text is not None:
         page.texts.append(text_block(tree.root_text, 0.0, 0.0))
-
-    if pdf_mode:
-        # ink written while zoomed/scrolled extends past the page edges and
-        # bottom; grow the canvas around the page so nothing is clipped
-        xs = [x for s in page.strokes for x, _ in s.points]
-        xs += [t.pos_x + t.width for t in page.texts]
-        xs += [x + w for hl in page.highlights for x, _, w, _ in hl.rectangles]
-        ys = [y for s in page.strokes for _, y in s.points]
-        ys += [t.pos_y + t.height for t in page.texts]
-        ys += [y + h for hl in page.highlights for _, y, _, h in hl.rectangles]
-        if xs or ys:
-            x_min = min([0.0] + xs) if xs else 0.0
-            x_max = max([PAGE_WIDTH] + xs) if xs else PAGE_WIDTH
-            shift = -x_min  # move everything right so left-overflow fits
-            if shift:
-                for s in page.strokes:
-                    s.points = [(x + shift, y) for x, y in s.points]
-                for t in page.texts:
-                    t.pos_x += shift
-                for hl in page.highlights:
-                    hl.rectangles = [(x + shift, y, w, h) for x, y, w, h in hl.rectangles]
-            page.origin = (shift, 0.0)
-            height = max(ys) if ys else PAGE_HEIGHT
-            page.content_size = (x_max + shift, max(PAGE_HEIGHT, height + TOP_MARGIN))
-    else:
-        _normalise(page)
     return page
 
 
-def _normalise(page: PageModel) -> None:
-    """Shift content onto the page: y starts at the top margin, narrower
-    content is centred horizontally; compute the content size."""
-    if not (page.strokes or page.texts):
-        return
-    xs: list[float] = []
-    ys: list[float] = []
-    for s in page.strokes:
-        xs += [x for x, _ in s.points]
-        ys += [y for _, y in s.points]
-    for t in page.texts:
-        xs += [t.pos_x, t.pos_x + t.width]
-        ys += [t.pos_y, t.pos_y + getattr(t, "height", 70)]
-    if not xs:
-        return
-    min_x, max_x = min(xs), max(xs)
-    min_y = min(ys)
-    dx = (PAGE_WIDTH - (max_x - min_x)) / 2 - min_x if (max_x - min_x) < PAGE_WIDTH else -min_x
-    dy = TOP_MARGIN - min_y
-    for s in page.strokes:
-        s.points = [(x + dx, y + dy) for x, y in s.points]
-    for t in page.texts:
-        t.pos_x += dx
-        t.pos_y += dy
-    height = max(ys) + dy + TOP_MARGIN
-    width = max_x + dx
-    page.content_size = (max(PAGE_WIDTH, width), max(PAGE_HEIGHT, height))
+# ---------------------------------------------------------------- v5 adapter
 
 
-def _parse_v5(data: bytes) -> PageModel:
-    """Parse a 'version=5' .lines file (software 2.x).
+def _decode_v5(data: bytes) -> PageModel:
+    """Decode a 'version=5' .lines file (software 2.x).
 
     These files were extended mid-generation (software ~2.13 added a
     per-line id field and other records the classic spec lacks), so this
     is a tolerant scanner: it walks the buffer, validates each candidate
     line record hard (pen/width/colour/npts ranges + first point on the
     page), and skips four bytes past anything it doesn't recognise. A
-    torn or exotic file still yields every stroke that survives.
+    torn or exotic file still yields every stroke that survives. v5 points
+    are already in page coordinates.
     """
     page = PageModel()
     pos = 51
@@ -380,10 +330,3 @@ def _parse_v5(data: bytes) -> PageModel:
             )
         pos = start + 20 + npts * 24
     return page
-
-
-def page_text(page: PageModel) -> str:
-    """All searchable text of a page: typed text plus PDF-highlight text."""
-    parts = [t.text for t in page.texts if t.text]
-    parts += [h.text for h in page.highlights if h.text]
-    return "\n".join(parts).strip()

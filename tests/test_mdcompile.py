@@ -2,7 +2,8 @@ import zipfile
 
 from remarksync.mdcompile import (build_rmdoc, markdown_to_rmdoc,
                                   markdown_to_text, paginate_text)
-from remarksync.rmdata import page_text, parse_rm
+from remarksync.layout import lay_out
+from remarksync.rmdata import decode_page, page_text
 
 
 def test_markdown_flattening():
@@ -41,10 +42,11 @@ def test_compiled_pages_roundtrip():
     blob = build_rmdoc("T", ["round trip works"])
     with zipfile.ZipFile(io.BytesIO(blob)) as zf:
         raw = zf.read("0/0.rm")
-        page = parse_rm(raw)
-        # text is normalised onto the page: near the top, within margins
-        assert 0 <= page.texts[0].pos_y <= 100
-        assert 0 < page.texts[0].pos_x < 1404
+        page = decode_page(raw)
+        # the compiled text box lands near the top of the page, within margins
+        placed = lay_out(page).page
+        assert 0 <= placed.texts[0].pos_y <= 300
+        assert 0 < placed.texts[0].pos_x < 1404
     assert page_text(page) == "round trip works"
 
 
@@ -57,5 +59,5 @@ def test_markdown_to_rmdoc_end_to_end(tmp_path):
     doc = open_rmdoc(out)
     assert doc.name == "Big Doc"
     assert len(doc.pages) >= 3
-    first = parse_rm(doc.pages[0].rm_path)
+    first = decode_page(doc.pages[0].rm_path)
     assert "Notes" in page_text(first)

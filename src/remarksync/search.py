@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .library import iter_docs
-from .rmdata import page_text, parse_rm
+from .rmdata import decode_page, page_text
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ def build_index(items: list, db_path: Path, progress=None) -> int:
                     (doc.uuid, doc.name, doc.file_type, len(doc.pages), doc.last_modified),
                 )
                 for page in doc.pages:
-                    text = page_text(parse_rm(page.rm_path)) if page.rm_path is not None else ""
+                    text = page_text(decode_page(page.rm_path)) if page.rm_path is not None else ""
                     # the doc name is searchable from every page
                     body = (doc.name + "\n" + text).strip()
                     if not body:

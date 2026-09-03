@@ -55,9 +55,9 @@ def test_cpages_journal_doc(backup_root):
     assert page.rm_path is not None and page.rm_path.name == "c48a9c11-c2ba-4027-a867-0fc7bcb5476a.rm"
     assert page.template == TEMPLATE_RULED  # "P Lines medium"
 
-    from remarksync.rmdata import page_text, parse_rm
+    from remarksync.rmdata import decode_page, page_text
 
-    assert "coffee" in page_text(parse_rm(page.rm_path))
+    assert "coffee" in page_text(decode_page(page.rm_path))
 
 
 def test_open_rmdoc_roundtrip(backup_root, tmp_path):

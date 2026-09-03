@@ -52,12 +52,13 @@ class DocItem:
     file_type: str = "notebook"  # notebook | pdf | epub
     pages: list[PageRef] = field(default_factory=list)
     base_path: Path | None = None  # source .pdf/.epub for annotated documents
+    base_pdf: Path | None = None  # PDF to draw under the ink: the .pdf itself, or the tablet's cached render of an .epub
     doc_dir: Path | None = None
     last_modified: str = ""
 
     def resolve_base_pdf(self) -> Path | None:
-        if self.file_type == "pdf" and self.base_path and self.base_path.exists():
-            return self.base_path
+        if self.base_pdf and self.base_pdf.exists():
+            return self.base_pdf
         return None
 
 
@@ -132,6 +133,9 @@ def _parse_doc(uuid: str, base: Path, meta: dict) -> DocItem:
 
     if file_type in ("pdf", "epub"):
         doc.base_path = _first_existing([base / f"{uuid}.{file_type}", base / f".{file_type}"])
+        # the tablet renders an .epub to a .pdf beside it, so both kinds
+        # get a PDF underlay when that file is present
+        doc.base_pdf = _first_existing([base / f"{uuid}.pdf", base / ".pdf"])
 
     # software 3.x stores pages as dicts under cPages.pages with per-page
     # templates; software 2.x used a flat list of page-id strings
@@ -148,15 +152,15 @@ def _parse_doc(uuid: str, base: Path, meta: dict) -> DocItem:
     elif isinstance(raw_pages, list):
         page_ids = [str(p) for p in raw_pages]
     if not page_ids:
-        if file_type == "pdf" and doc.base_path:
-            # unannotated PDFs keep an empty pages list; show the PDF itself
+        if doc.base_pdf:
+            # unannotated documents keep an empty pages list; show the base PDF itself
             try:
                 import fitz
 
-                with fitz.open(doc.base_path) as pdf:
+                with fitz.open(doc.base_pdf) as pdf:
                     page_ids = [str(i) for i in range(pdf.page_count)]
             except Exception as exc:
-                log.warning("could not open base pdf %s: %s", doc.base_path, exc)
+                log.warning("could not open base pdf %s: %s", doc.base_pdf, exc)
         else:
             # fall back to numbered page directories on disk
             page_ids = [
