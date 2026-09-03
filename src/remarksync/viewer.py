@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QWidget
 from .layout import PageFrame, lay_out
 from .library import TEMPLATE_BLANK, TEMPLATE_DOTS, TEMPLATE_GRID, TEMPLATE_ISOMETRIC, TEMPLATE_RULED, DocItem, PageRef
 from .rmdata import PageModel, decode_page
-from .textmetrics import TEXT_BOX_PADDING, TEXT_FONT_PX, TEXT_MIN_BOX_WIDTH
+from .textmetrics import TEXT_FONT_PX, TEXT_MIN_BOX_WIDTH
 
 _TEMPLATE_PEN = QColor(0xB3, 0xB3, 0xB3)
 

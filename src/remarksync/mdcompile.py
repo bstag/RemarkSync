@@ -20,17 +20,9 @@ from pathlib import Path
 
 from rmscene import RootTextBlock, simple_text_document, write_blocks
 
-# reMarkable text-box coordinates are centre-relative, y downwards. Device
-# text pages anchor boxes near the top; simple_text_document's default
-# (pos_y=234) lands mid/lower page, so compiled pages override it.
-TEXT_POS_X = -468.0
-TEXT_POS_Y = -780.0
-TEXT_WIDTH = 936.0
-
-# Conservative page fill: the tablet wraps text inside the 936-unit-wide text
-# box; we break lines ourselves so pages stay predictable.
-CHARS_PER_LINE = 62
-LINES_PER_PAGE = 40
+# Text-box placement and page fill come from the shared text metrics, so the
+# compiler, the page decoder and the painter agree on where text sits.
+from .textmetrics import CHARS_PER_LINE, TEXT_POS_X, TEXT_POS_Y, TEXT_WIDTH, lines_per_page
 
 _LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
 _IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
@@ -78,8 +70,9 @@ def paginate_text(text: str) -> list[str]:
     for line in text.splitlines():
         wrapped.extend(_wrap_line(line))
     pages: list[str] = []
-    for start in range(0, max(1, len(wrapped)), LINES_PER_PAGE):
-        chunk = wrapped[start : start + LINES_PER_PAGE]
+    per_page = lines_per_page()
+    for start in range(0, max(1, len(wrapped)), per_page):
+        chunk = wrapped[start : start + per_page]
         if chunk:
             pages.append("\n".join(chunk))
     return pages or [""]

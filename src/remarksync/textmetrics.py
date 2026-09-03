@@ -48,8 +48,6 @@ def paragraphs_height(styles: Iterable[str | None]) -> float:
 
 # Font pixel size in tablet units, tuned to look close to on-device text.
 TEXT_FONT_PX = 30
-# Extra room below a block's computed height so the last line is not clipped.
-TEXT_BOX_PADDING = 20.0
 TEXT_MIN_BOX_WIDTH = 50.0
 
 # -- compiler --------------------------------------------------------------
