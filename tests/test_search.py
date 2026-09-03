@@ -1,4 +1,4 @@
-from remarksync.library import iter_docs, scan_root
+from remarksync.backup import iter_docs, scan_root
 from remarksync.search import build_index, search
 
 from .conftest import INK_UUID, DIARY_UUID

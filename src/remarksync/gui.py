@@ -1,4 +1,8 @@
-"""RemarkSync main window: library tree, page viewer, search, compilers."""
+"""RemarkSync main window: library tree, page viewer, search, compilers.
+
+The window is a caller of :class:`~remarksync.library.Library`; it holds
+widgets and slots, not library state.
+"""
 
 from __future__ import annotations
 
@@ -10,8 +14,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
     QFileDialog,
-    QHBoxLayout,
-    QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
@@ -29,12 +31,10 @@ from PySide6.QtWidgets import (
 )
 
 from . import APP_NAME, __version__
-from .library import DocItem, FolderItem, iter_docs, open_rmdoc, scan_root
+from .backup import DocItem, open_rmdoc
+from .library import Library, NoIndexError
 from .mdcompile import markdown_to_rmdoc
-from .search import build_index, search
 from .viewer import PageCanvas, PdfUnderlay
-
-INDEX_NAME = ".remarksync-index.db"
 
 
 class MainWindow(QMainWindow):
@@ -43,9 +43,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{APP_NAME} {__version__}")
         self.resize(1400, 900)
 
-        self._library_path: Path | None = None
-        self._tree_items: list = []
-        self._docs_by_uuid: dict[str, DocItem] = {}
+        self._library: Library | None = None
         self._canvases: list[PageCanvas] = []
         self._underlay: PdfUnderlay | None = None
         self._scale = 0.62
@@ -113,8 +111,6 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(splitter)
 
         # right: search results dock
-        from PySide6.QtWidgets import QDockWidget
-
         self.results_list = QListWidget()
         self.results_list.itemClicked.connect(self._on_result_click)
         dock = QDockWidget("Search results", self)
@@ -140,22 +136,20 @@ class MainWindow(QMainWindow):
             if not chosen:
                 return
             path = Path(chosen)
-        self._library_path = path
+        self._library = Library(path)
         self.settings.setValue("library_path", str(path))
-        self._scan()
-        self.statusBar().showMessage(f"{path} — {len(self._docs_by_uuid)} documents")
+        self._populate_tree()
+        self.statusBar().showMessage(f"{path} — {len(self._library)} documents")
 
     def refresh(self) -> None:
-        if self._library_path:
-            self._scan()
-
-    def _scan(self) -> None:
-        self._tree_items = scan_root(self._library_path)
-        self._docs_by_uuid = {d.uuid: d for d in iter_docs(self._tree_items)}
-        self._populate_tree()
+        if self._library is not None:
+            self._library.refresh()
+            self._populate_tree()
 
     def _populate_tree(self) -> None:
         self.doc_tree.clear()
+        if self._library is None:
+            return
 
         def add_items(parent_widget, items):
             for item in items:
@@ -167,7 +161,7 @@ class MainWindow(QMainWindow):
                     add_items(node, item.children)
                 node.setData(0, Qt.UserRole, item)
 
-        add_items(self.doc_tree, self._tree_items)
+        add_items(self.doc_tree, self._library.tree)
         self.doc_tree.expandToDepth(0)
 
     def _on_tree_click(self, node: QTreeWidgetItem, _col: int) -> None:
@@ -189,8 +183,9 @@ class MainWindow(QMainWindow):
         if self._underlay:
             self._underlay.close()
             self._underlay = None
-        if doc.file_type == "pdf" and doc.resolve_base_pdf():
-            self._underlay = PdfUnderlay(doc.resolve_base_pdf())
+        base_pdf = doc.resolve_base_pdf()
+        if base_pdf:
+            self._underlay = PdfUnderlay(base_pdf)
 
         self._active_doc = doc
         # render the first screen synchronously; large docs (1000+ page
@@ -228,44 +223,34 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------- search
 
-    def _index_db(self) -> Path | None:
-        if not self._library_path:
-            return None
-        db = self._library_path / INDEX_NAME
-        return db if db.exists() else None
-
     def rebuild_index(self) -> None:
-        if not self._library_path:
+        if self._library is None:
             self.statusBar().showMessage("Open a library folder first.")
             return
-        items = self._tree_items or scan_root(self._library_path)
-        docs = list(iter_docs(items))
-        progress = QProgressDialog("Building search index…", "Cancel", 0, max(1, len(docs)), self)
+        progress = QProgressDialog("Building search index…", "Cancel", 0, max(1, len(self._library)), self)
         progress.setWindowModality(Qt.WindowModal)
-        db = self._library_path / INDEX_NAME
 
-        def cb(name: str) -> None:
+        def step(name: str) -> bool:
             progress.setValue(progress.value() + 1)
             progress.setLabelText(f"Indexing {name}")
             QApplication.processEvents()
-            if progress.wasCanceled():
-                raise KeyboardInterrupt
+            return not progress.wasCanceled()
 
-        try:
-            n = build_index(items, db, progress=cb)
-            self.statusBar().showMessage(f"Index built: {n} pages")
-        except KeyboardInterrupt:
-            self.statusBar().showMessage("Index build cancelled")
+        report = self._library.rebuild_index(progress=step)
+        if report.completed:
+            self.statusBar().showMessage(f"Index built: {report.pages} pages")
+        else:
+            self.statusBar().showMessage(f"Index build cancelled after {report.pages} pages")
 
     def run_search(self) -> None:
         query = self.search_box.text().strip()
-        if not query:
+        if not query or self._library is None:
             return
-        db = self._index_db()
-        if db is None:
+        try:
+            hits = self._library.search(query)
+        except NoIndexError:
             self.statusBar().showMessage("No search index — use “Rebuild Search Index” first (Ctrl+I).")
             return
-        hits = search(db, query)
         self.results_list.clear()
         for hit in hits:
             widget_item = QListWidgetItem(f"{hit.doc_name} — p{hit.page_no + 1}\n{hit.snippet}")
@@ -276,7 +261,7 @@ class MainWindow(QMainWindow):
 
     def _on_result_click(self, list_item: QListWidgetItem) -> None:
         hit = list_item.data(Qt.UserRole)
-        doc = self._docs_by_uuid.get(hit.doc_uuid)
+        doc = self._library.document(hit.doc_uuid) if self._library else None
         if doc is None:
             self.statusBar().showMessage("Document not in current library tree (opened archive?)")
             return

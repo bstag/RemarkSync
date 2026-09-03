@@ -1,72 +1,76 @@
-from remarksync.library import (TEMPLATE_DOTS, TEMPLATE_RULED, iter_docs,
-                                open_rmdoc, scan_root)
+"""The Library: an opened backup folder with its tree, index and search.
 
-from .conftest import (DELETED_UUID, DIARY_UUID, FOLDER_UUID, INK_UUID,
-                       JOURNAL_UUID, PDF_UUID)
+These run with no Qt; the window and the CLI are two callers of the same
+interface.
+"""
 
+import pytest
 
-def test_scan_builds_tree(backup_root):
-    tree = scan_root(backup_root)
-    assert len(tree) == 2  # Research folder + Diary doc (deleted skipped)
-    folder = next(t for t in tree if t.kind == "folder")
-    assert folder.name == "Research"
-    assert [c.name for c in folder.children] == ["2026", "Ink Notes", "Paper PDF"]
+from remarksync.library import INDEX_NAME, Library, NoIndexError
 
-
-def test_scan_skips_deleted(backup_root):
-    docs = {d.uuid: d for d in iter_docs(scan_root(backup_root))}
-    assert DELETED_UUID not in docs
-    assert set(docs) == {INK_UUID, PDF_UUID, DIARY_UUID, JOURNAL_UUID}
+from .conftest import (DELETED_UUID, DIARY_UUID, INK_UUID, JOURNAL_UUID,
+                       PDF_UUID, page_rm, write_content, write_metadata)
 
 
-def test_notebook_pages_and_templates(backup_root):
-    docs = {d.uuid: d for d in iter_docs(scan_root(backup_root))}
-    ink = docs[INK_UUID]
-    assert ink.file_type == "notebook"
-    assert len(ink.pages) == 2
-    assert ink.pages[0].rm_path is not None and ink.pages[0].rm_path.exists()
-    assert ink.pages[0].template == "blank"
-    assert ink.pages[1].template == TEMPLATE_DOTS
+def test_open_library_scans_the_backup(backup_root):
+    lib = Library(backup_root)
+    assert lib.root == backup_root
+    assert len(lib.tree) == 2  # Research folder + Diary doc
+    assert {d.uuid for d in lib.documents} == {INK_UUID, PDF_UUID, DIARY_UUID, JOURNAL_UUID}
+    assert len(lib) == 4
+    assert lib.document(INK_UUID).name == "Ink Notes"
+    assert lib.document(DELETED_UUID) is None
+    assert lib.document("not-a-uuid") is None
 
 
-def test_pdf_doc_has_base(backup_root):
-    docs = {d.uuid: d for d in iter_docs(scan_root(backup_root))}
-    pdf_doc = docs[PDF_UUID]
-    assert pdf_doc.file_type == "pdf"
-    assert pdf_doc.resolve_base_pdf() == backup_root / f"{PDF_UUID}.pdf"
-    # page 1 has no annotations: rm_path may be None but the page is kept
-    assert len(pdf_doc.pages) == 2
+def test_refresh_picks_up_new_documents(backup_root):
+    lib = Library(backup_root)
+    new_uuid = "99999999-1111-2222-3333-444444444444"
+    write_metadata(backup_root, new_uuid, {"visibleName": "Late Arrival", "parent": "", "type": "DocumentType"})
+    write_content(backup_root, new_uuid, {"fileType": "notebook", "pages": ["0"]})
+    (backup_root / new_uuid / "0").mkdir(parents=True)
+    (backup_root / new_uuid / "0" / "0.rm").write_bytes(page_rm(text="late"))
+    assert lib.document(new_uuid) is None
+    lib.refresh()
+    assert lib.document(new_uuid).name == "Late Arrival"
 
 
-def test_templates_normalised(backup_root):
-    docs = {d.uuid: d for d in iter_docs(scan_root(backup_root))}
-    assert docs[DIARY_UUID].pages[0].template == TEMPLATE_RULED
+def test_index_lives_in_the_backup_folder(backup_root):
+    lib = Library(backup_root)
+    assert lib.index_path == backup_root / INDEX_NAME
+    assert not lib.has_index
 
 
-def test_cpages_journal_doc(backup_root):
-    """Software 3.x docs: pages as dicts under cPages.pages, flat .rm files,
-    per-page template inline — must resolve like any other notebook."""
-    docs = {d.uuid: d for d in iter_docs(scan_root(backup_root))}
-    journal = docs[JOURNAL_UUID]
-    assert journal.name == "2026"
-    assert journal.parent == FOLDER_UUID
-    assert len(journal.pages) == 1
-    page = journal.pages[0]
-    assert page.rm_path is not None and page.rm_path.name == "c48a9c11-c2ba-4027-a867-0fc7bcb5476a.rm"
-    assert page.template == TEMPLATE_RULED  # "P Lines medium"
-
-    from remarksync.rmdata import decode_page, page_text
-
-    assert "coffee" in page_text(decode_page(page.rm_path))
+def test_search_before_indexing_is_an_explicit_error(backup_root):
+    lib = Library(backup_root)
+    with pytest.raises(NoIndexError):
+        lib.search("diary")
 
 
-def test_open_rmdoc_roundtrip(backup_root, tmp_path):
-    from remarksync.mdcompile import markdown_to_rmdoc
+def test_rebuild_index_then_search(backup_root):
+    lib = Library(backup_root)
+    seen: list[str] = []
+    report = lib.rebuild_index(progress=lambda name: seen.append(name) or True)
+    assert report.completed
+    assert report.pages >= 3
+    assert lib.has_index
+    assert set(seen) == {d.name for d in lib.documents}
 
-    md = "# Hello\n\n- one\n- two\n\nsome *emphasis* and a [link](https://example.com)\n"
-    rmdoc_path = markdown_to_rmdoc(md, "Compiled Doc", tmp_path / "compiled.rmdoc")
-    doc = open_rmdoc(rmdoc_path)
-    assert doc.name == "Compiled Doc"
-    assert doc.file_type == "notebook"
-    assert len(doc.pages) >= 1
-    assert all(p.rm_path is not None for p in doc.pages)
+    hits = lib.search("flux capacitor")
+    assert hits and hits[0].doc_uuid == DIARY_UUID
+    assert lib.document(hits[0].doc_uuid).name == "Diary 2026"
+    assert lib.search("zzznotfound") == []
+
+
+def test_rebuild_index_can_be_cancelled(backup_root):
+    lib = Library(backup_root)
+    calls: list[str] = []
+
+    def stop_after_first(name: str) -> bool:
+        calls.append(name)
+        return False
+
+    report = lib.rebuild_index(progress=stop_after_first)
+    assert not report.completed
+    assert len(calls) == 1
+    assert lib.has_index  # what was indexed is kept

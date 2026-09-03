@@ -28,7 +28,7 @@ def test_main_window_opens_library(qapp, backup_root, tmp_path, monkeypatch):
     # find and open the ink notebook from the tree
     def find_doc(node):
         item = node.data(0, 0x0100)  # Qt.UserRole
-        from remarksync.library import DocItem
+        from remarksync.backup import DocItem
 
         if isinstance(item, DocItem):
             return item

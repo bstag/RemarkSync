@@ -12,7 +12,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from .library import iter_docs
+from .backup import iter_docs
 from .rmdata import decode_page, page_text
 
 log = logging.getLogger(__name__)
@@ -50,7 +50,11 @@ def open_db(db_path: Path) -> sqlite3.Connection:
 
 
 def build_index(items: list, db_path: Path, progress=None) -> int:
-    """(Re)build the index from a scan tree. Returns number of pages indexed."""
+    """(Re)build the index from a scan tree. Returns number of pages indexed.
+
+    ``progress(doc_name)`` is called after each document; returning
+    ``False`` stops the build (what was indexed so far is kept).
+    """
     conn = open_db(db_path)
     count = 0
     try:
@@ -73,8 +77,8 @@ def build_index(items: list, db_path: Path, progress=None) -> int:
                         (doc.uuid, page.index, doc.name, body),
                     )
                     count += 1
-                if progress:
-                    progress(doc.name)
+                if progress is not None and progress(doc.name) is False:
+                    break
     finally:
         conn.close()
     return count

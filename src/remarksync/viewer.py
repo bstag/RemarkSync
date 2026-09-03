@@ -14,7 +14,7 @@ from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, Q
 from PySide6.QtWidgets import QWidget
 
 from .layout import PageFrame, lay_out
-from .library import TEMPLATE_BLANK, TEMPLATE_DOTS, TEMPLATE_GRID, TEMPLATE_ISOMETRIC, TEMPLATE_RULED, DocItem, PageRef
+from .backup import TEMPLATE_BLANK, TEMPLATE_DOTS, TEMPLATE_GRID, TEMPLATE_ISOMETRIC, TEMPLATE_RULED, DocItem, PageRef
 from .rmdata import PageModel, decode_page
 from .textmetrics import TEXT_FONT_PX, TEXT_MIN_BOX_WIDTH
 

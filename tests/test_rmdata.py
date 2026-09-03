@@ -1,6 +1,6 @@
 """Page decoder: bytes in, PageModel in page coordinates out."""
 
-from remarksync.library import iter_docs, scan_root
+from remarksync.backup import iter_docs, scan_root
 from remarksync.rmdata import PAGE_WIDTH, decode_page, page_text
 from rmscene import scene_items as si
 

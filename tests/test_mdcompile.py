@@ -54,7 +54,7 @@ def test_markdown_to_rmdoc_end_to_end(tmp_path):
     md = "# Notes\n\n" + ("filler line for pagination\n" * 100)
     out = markdown_to_rmdoc(md, "Big Doc", tmp_path / "big.rmdoc")
     assert out.exists()
-    from remarksync.library import open_rmdoc
+    from remarksync.backup import open_rmdoc
 
     doc = open_rmdoc(out)
     assert doc.name == "Big Doc"

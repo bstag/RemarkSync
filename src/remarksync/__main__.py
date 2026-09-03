@@ -44,9 +44,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "scan":
         from pathlib import Path
 
-        from .library import iter_docs, scan_root
+        from .library import Library
 
-        tree = scan_root(Path(args.root))
+        library = Library(Path(args.root))
 
         def show(items, indent=0):
             for it in items:
@@ -56,8 +56,8 @@ def main(argv: list[str] | None = None) -> int:
                 if it.kind == "folder":
                     show(it.children, indent + 1)
 
-        show(tree)
-        print(f"total docs: {len(list(iter_docs(tree)))}")
+        show(library.tree)
+        print(f"total docs: {len(library)}")
         return 0
 
     if args.command == "compile":
