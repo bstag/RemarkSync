@@ -7,10 +7,12 @@ and licences unless a key was installed. It ships BusyBox, not rsync, so
 the pull is built from ``ssh`` and ``tar``:
 
 1. one ``tar`` over SSH brings every ``.metadata`` file (small, one per
-   document);
-2. each is compared with the local copy: the tablet rewrites a document's
-   metadata on every edit, so a changed or missing file marks a document
-   to fetch;
+   document) and every text conversion (``<uuid>.textconversion/*.json``,
+   written when a page is converted to text on the device without the
+   metadata changing);
+2. each document's signature (metadata plus conversions) is compared
+   with the local copy: the tablet rewrites the metadata on every edit,
+   so a changed or missing signature marks a document to fetch;
 3. a second ``tar`` brings just those documents' files (``<uuid>.*`` and
    ``<uuid>/``), replacing the local copies so removed pages vanish too.
 
@@ -46,8 +48,9 @@ Progress = Callable[[str], bool | None]
 class Tablet(Protocol):
     """Where a backup comes from: the device's document store."""
 
-    def read_metadata(self) -> dict[str, bytes]:
-        """``.metadata`` file contents by document uuid, for every document."""
+    def read_signatures(self) -> dict[str, bytes]:
+        """A signature per document uuid: its ``.metadata`` plus any text
+        conversions, so either kind of change is noticed."""
 
     def fetch(self, uuids: list[str], into: Path) -> None:
         """Copy ``<uuid>.*`` and ``<uuid>/`` for each uuid into ``into``."""
@@ -73,15 +76,19 @@ class SshTablet:
             )
         return proc.stdout
 
-    def read_metadata(self) -> dict[str, bytes]:
-        out: dict[str, bytes] = {}
-        with tarfile.open(fileobj=io.BytesIO(self._tar(["*.metadata"])), mode="r:") as tar:
+    def read_signatures(self) -> dict[str, bytes]:
+        files: dict[str, dict[str, bytes]] = {}
+        data = self._tar(["*.metadata", "$(ls -d *.textconversion 2>/dev/null)"])
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as tar:
             for member in tar.getmembers():
-                if member.isfile() and member.name.endswith(".metadata"):
-                    handle = tar.extractfile(member)
-                    if handle is not None:
-                        out[Path(member.name).name[: -len(".metadata")]] = handle.read()
-        return out
+                if not member.isfile():
+                    continue
+                name = member.name.lstrip("./")
+                uuid = name.split("/", 1)[0].split(".", 1)[0]
+                handle = tar.extractfile(member)
+                if handle is not None:
+                    files.setdefault(uuid, {})[name] = handle.read()
+        return {uuid: _signature(parts) for uuid, parts in files.items() if f"{uuid}.metadata" in parts}
 
     def fetch(self, uuids: list[str], into: Path) -> None:
         for start in range(0, len(uuids), FETCH_BATCH):
@@ -101,8 +108,8 @@ class LocalTablet:
     def __init__(self, root: Path):
         self.root = Path(root)
 
-    def read_metadata(self) -> dict[str, bytes]:
-        return {p.name[: -len(".metadata")]: p.read_bytes() for p in self.root.glob("*.metadata")}
+    def read_signatures(self) -> dict[str, bytes]:
+        return {p.name[: -len(".metadata")]: local_signature(self.root, p.name[: -len(".metadata")]) for p in self.root.glob("*.metadata")}
 
     def fetch(self, uuids: list[str], into: Path) -> None:
         for u in uuids:
@@ -126,14 +133,33 @@ class PullReport:
         return len(self.new) + len(self.changed)
 
 
+def _signature(parts: dict[str, bytes]) -> bytes:
+    """Metadata plus conversions, in a stable order."""
+    return b"".join(name.encode() + b"\0" + data + b"\0" for name, data in sorted(parts.items()))
+
+
+def local_signature(root: Path, uuid: str) -> bytes | None:
+    """The signature of a local document, or None if it is not there."""
+    meta = root / f"{uuid}.metadata"
+    if not meta.exists():
+        return None
+    parts = {meta.name: meta.read_bytes()}
+    folder = root / f"{uuid}.textconversion"
+    if folder.is_dir():
+        for f in sorted(folder.iterdir()):
+            if f.is_file():
+                parts[f"{folder.name}/{f.name}"] = f.read_bytes()
+    return _signature(parts)
+
+
 def plan(remote: dict[str, bytes], dest: Path) -> PullReport:
-    """Which documents to fetch, given the tablet's metadata and the local copies."""
+    """Which documents to fetch, given the tablet's signatures and the local copies."""
     report = PullReport()
     for uuid, data in remote.items():
-        local = dest / f"{uuid}.metadata"
-        if not local.exists():
+        local = local_signature(dest, uuid)
+        if local is None:
             report.new.append(uuid)
-        elif local.read_bytes() != data:
+        elif local != data:
             report.changed.append(uuid)
         else:
             report.unchanged.append(uuid)
@@ -161,7 +187,7 @@ def pull(
     dest.mkdir(parents=True, exist_ok=True)
     tablet = tablet or SshTablet(host, timeout=timeout)
 
-    remote = tablet.read_metadata()
+    remote = tablet.read_signatures()
     report = plan(remote, dest)
     todo = list(remote) if force else report.new + report.changed
     if force:

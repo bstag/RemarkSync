@@ -89,7 +89,7 @@ def test_pull_can_be_cancelled(backup_root, tmp_path):
 
 
 def test_plan_is_pure(backup_root, tmp_path):
-    remote = LocalTablet(backup_root).read_metadata()
+    remote = LocalTablet(backup_root).read_signatures()
     report = plan(remote, tmp_path / "empty-mirror")
     assert set(report.new) == set(remote) and report.unchanged == []
     assert JOURNAL_UUID in report.new
@@ -136,3 +136,17 @@ def test_failed_fetch_keeps_the_local_copy(backup_root, tmp_path):
     assert (dest / f"{INK_UUID}.content").exists()  # untouched
     assert (dest / INK_UUID / "0" / "0.rm").exists()
     assert not (dest / ".remarksync-pull-tmp").exists()
+
+
+def test_a_text_conversion_alone_marks_the_document_changed(backup_root, tmp_path):
+    """Converting a page to text on the tablet writes <uuid>.textconversion
+    without touching the metadata; the pull must still notice."""
+    dest = tmp_path / "mirror"
+    pull(dest, LocalTablet(backup_root))
+    folder = backup_root / f"{INK_UUID}.textconversion"
+    folder.mkdir()
+    (folder / "0.json").write_text('{"text": "<p>converted</p>"}')
+    report = pull(dest, LocalTablet(backup_root))
+    assert report.changed == [INK_UUID]
+    assert (dest / f"{INK_UUID}.textconversion" / "0.json").exists()
+    assert pull(dest, LocalTablet(backup_root)).fetched == 0
