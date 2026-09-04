@@ -13,7 +13,8 @@ from remarksync.textmetrics import (FIRST_BASELINE, STYLES, TEXT_POS_Y, block_he
 STYLES_PAGE = [
     ("HEADING", "Heading i think this is"),
     ("HEADING", "This is me doing a heading that wraps well see"),
-    ("BOLD", "This is thr next size down"),
+    ("SUBHEADING", "This is thr next size down"),  # a 46 px serif line whose style code is still unknown
+    ("BOLD", "This is the next size dien "),  # code 3: 36 px medium sans
     ("PLAIN", "This is normal text"),
     ("BULLET", "Bullets"),
     ("BULLET", "Bulllets that " + ", ".join(["will wrap"] * 8)),  # 100 characters, as typed on the tablet
@@ -27,31 +28,33 @@ STYLES_PAGE = [
 ]
 # baselines measured in the export, page coordinates; the wrapped heading and
 # wrapped bullet each contribute two lines
-MEASURED_BASELINES = [295.3, 458.5, 534.0, 650.0, 798.2, 867.3, 936.6, 981.8, 1051.2, 1120.3, 1189.6, 1259.0, 1328.1, 1397.4, 1466.5]
+MEASURED_BASELINES = [295.3, 458.5, 534.0, 650.0, 734.5, 798.2, 867.3, 936.6, 981.8, 1051.2, 1120.3, 1189.6, 1259.0, 1328.1, 1397.4, 1466.5]
 
 
-def test_heading_and_subheading_baselines_are_reproduced():
-    # the page's second code-3 paragraph renders as bold body text on the
-    # tablet for reasons the file does not record, so the regression covers
-    # the run up to it and the body run after it separately
-    lines = lay_out_lines(STYLES_PAGE[:3])
+def test_every_measured_baseline_is_reproduced():
+    lines = lay_out_lines(STYLES_PAGE)
+    assert len(lines) == len(MEASURED_BASELINES)
     predicted = [TEXT_POS_Y + ln.baseline for ln in lines]
-    assert len(predicted) == 4
-    assert max(abs(p - m) for p, m in zip(predicted, MEASURED_BASELINES[:4])) < 1.0
+    assert max(abs(p - m) for p, m in zip(predicted, MEASURED_BASELINES)) < 1.0
     assert lines[1].first and not lines[2].first  # the heading wrapped
     assert lines[2].text == "well see"
+    assert not lines[8].first and lines[8].text.startswith("wrap")  # the bullet wrapped
 
 
-def test_body_run_pitches_are_reproduced():
-    body = STYLES_PAGE[3:]
-    lines = lay_out_lines(body)
-    measured = MEASURED_BASELINES[4:]
-    assert len(lines) == len(measured)
-    predicted = [ln.baseline for ln in lines]
-    # compare pitches, which do not depend on where the run starts
-    for (a, b), (c, d) in zip(zip(predicted, predicted[1:]), zip(measured, measured[1:])):
-        assert (b - a) == pytest.approx(d - c, abs=0.5)
-    assert not lines[3].first and lines[3].text == "wrap, will wrap"  # the bullet wrapped where the tablet did
+def test_readme_export_rhythm():
+    # measured on the tablet's export of the compiled README: heading to
+    # body 70.9, body to bold 88.9, bold to body 63.7, and 72.2 after a line
+    # drawn with fallback glyphs (box drawing), 69.3 otherwise
+    lines = lay_out_lines([("HEADING", "RemarkSync"), ("PLAIN", ""), ("PLAIN", "text"), ("PLAIN", "\u251c\u2500\u2500 tree"),
+                           ("PLAIN", "plain after art"), ("PLAIN", ""), ("BOLD", "Install"), ("PLAIN", "")])
+    b = [ln.baseline for ln in lines]
+    assert b[1] - b[0] == pytest.approx(70.9)
+    assert b[2] - b[1] == pytest.approx(69.3)
+    assert b[3] - b[2] == pytest.approx(69.3)
+    assert b[4] - b[3] == pytest.approx(72.2)
+    assert b[5] - b[4] == pytest.approx(69.3)
+    assert b[6] - b[5] == pytest.approx(88.9)
+    assert b[7] - b[6] == pytest.approx(63.7)
 
 
 def test_first_baseline_and_body_pitch():
@@ -61,13 +64,21 @@ def test_first_baseline_and_body_pitch():
     assert lines[2].baseline - lines[1].baseline == pytest.approx(69.3, abs=0.1)
 
 
-def test_wrapping_never_breaks_a_word():
-    assert wrap("one two three", 7) == ["one two", "three"]
-    assert wrap("supercalifragilistic", 5) == ["supercalifragilistic"]
-    assert wrap("", 10) == [""]
-    assert chars_per_line(STYLES["PLAIN"]) == 87
-    assert chars_per_line(STYLES["BULLET"]) == 84  # measured: the tablet wrapped a bullet after 84 characters
-    assert chars_per_line(STYLES["HEADING"]) == 38  # measured: a heading wrapped after 37, not 42
+def test_wrapping_measures_glyph_widths_and_never_breaks_a_word():
+    from remarksync.textmetrics import text_width
+
+    plain = STYLES["PLAIN"]
+    first = "A local-first library, viewer, search index and format compiler for reMarkable"
+    assert text_width(first, plain) < 1152 < text_width(first + " tablets", plain)
+    # the README's first paragraph wrapped on the tablet before "tablets"
+    lines = wrap(first + " tablets \u2014 everything works from your own raw backups, no reMarkable Cloud required.", plain)
+    assert lines[0] == first
+    assert lines[1].startswith("tablets")
+    assert wrap("supercalifragilistic" * 20, plain) == ["supercalifragilistic" * 20]
+    assert wrap("", plain) == [""]
+    assert wrap("    cd E:\\Source", plain) == ["    cd E:\\Source"]  # code keeps its indent
+    # the heading on the styles page wrapped after "wraps"
+    assert wrap("This is me doing a heading that wraps well see", STYLES["HEADING"]) == ["This is me doing a heading that wraps", "well see"]
     assert chars_per_line(STYLES["BULLET2"]) < chars_per_line(STYLES["BULLET"])
 
 

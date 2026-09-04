@@ -53,7 +53,13 @@ class Style:
 # square 41 px left of it).
 STYLES: dict[str, Style] = {
     "HEADING": Style("HEADING", 63.7, True, 400, 0, None),
-    "BOLD": Style("BOLD", 45.8, True, 400, 0, None),  # the tablet's "subheading"
+    # style code 3: a medium-weight body line (what our own compiled ## lines
+    # rendered as on the device)
+    "BOLD": Style("BOLD", 35.8, False, 500, 0, None),
+    # the 46 px serif subheading seen on the styles page; its code is not
+    # known yet (the file showed code 3 for it too), so the decoder never
+    # produces it and the compiler does not emit it
+    "SUBHEADING": Style("SUBHEADING", 45.8, True, 400, 0, None),
     "PLAIN": Style("PLAIN", 31.9, False, 400, 0, None),
     "BASIC": Style("BASIC", 31.9, False, 400, 0, None),
     "BULLET": Style("BULLET", 31.9, False, 400, 48, "bullet"),
@@ -106,15 +112,50 @@ PARAGRAPH_GAP = -24.9
 # Lines inside one wrapped paragraph are closer: the font's own line height.
 CONTINUATION_RATIO = {63.7: 75.5 / 63.7, 31.9: 45.2 / 31.9}
 DEFAULT_CONTINUATION_RATIO = 1.3
-# Average glyph advance of the device fonts, in em: the sans body font
-# fits 84 characters of a bullet line (1104 px at 31.9 px), the serif
-# heading font wraps a heading between 37 and 41 characters.
-EM_PER_CHAR_SANS = 0.412
-EM_PER_CHAR_SERIF = 0.465
+# Glyph advances of the device fonts in em, measured character by
+# character from the tablet's PDF exports (reMarkableSans regular and
+# reMarkableSerifSmall). Characters not seen use the mean.
+ADVANCE_SANS: dict[str, float] = {
+    ' ': 0.236, '"': 0.348, '(': 0.327, '+': 0.537, ',': 0.211, '-': 0.342,
+    '.': 0.211, '/': 0.358, '1': 0.420, '2': 0.584, '5': 0.573, ':': 0.251,
+    'A': 0.649, 'B': 0.654, 'C': 0.688, 'D': 0.692, 'E': 0.593, 'F': 0.573,
+    'L': 0.530, 'M': 0.871, 'N': 0.738, 'P': 0.619, 'Q': 0.740, 'R': 0.654,
+    'S': 0.640, 'T': 0.578, 'U': 0.717, 'W': 0.972, '\\': 0.398, 'a': 0.546,
+    'b': 0.592, 'c': 0.536, 'd': 0.592, 'e': 0.547, 'f': 0.331, 'g': 0.545,
+    'h': 0.581, 'i': 0.248, 'k': 0.525, 'l': 0.266, 'm': 0.862, 'n': 0.583,
+    'o': 0.568, 'p': 0.592, 'q': 0.592, 'r': 0.360, 's': 0.498, 't': 0.361,
+    'u': 0.580, 'v': 0.502, 'w': 0.765, 'x': 0.499, 'y': 0.512, '—': 0.922,
+    'ﬁ': 0.592,
+}
+ADVANCE_SERIF: dict[str, float] = {
+    ' ': 0.235, 'H': 0.727, 'R': 0.646, 'S': 0.567, 'T': 0.639, 'a': 0.521,
+    'd': 0.605, 'e': 0.507, 'g': 0.528, 'h': 0.584, 'i': 0.247, 'k': 0.538,
+    'l': 0.247, 'm': 0.877, 'n': 0.584, 'o': 0.581, 'p': 0.604, 'r': 0.361,
+    's': 0.456, 't': 0.333, 'w': 0.748, 'x': 0.483, 'y': 0.501, 'z': 0.478,
+}
+DEFAULT_ADVANCE_SANS = 0.54
+DEFAULT_ADVANCE_SERIF = 0.52
+# Glyphs the device fonts lack (box drawing, arrows, geometric shapes) come
+# from a fallback font with a deeper line box: the line after such a line
+# sits 72.2 px below it instead of 69.3.
+FALLBACK_LINE_EXTRA = 2.9
 # Descent below the baseline, as a fraction of the font size.
 DESCENT_RATIO = 0.22
 
 BODY_PITCH = 69.3  # body paragraph to body paragraph
+
+# Baseline-to-baseline pitches measured on the tablet's exports, keyed by
+# (font size of the first paragraph, font size of the second). Pairs not
+# measured fall back to the linear ramp.
+MEASURED_PITCH: dict[tuple[float, float], float] = {
+    (31.9, 31.9): 69.3,
+    (63.7, 63.7): 163.2,
+    (63.7, 45.8): 116.0,
+    (63.7, 31.9): 70.9,
+    (45.8, 35.8): 84.5,
+    (35.8, 31.9): 63.7,
+    (31.9, 35.8): 88.9,
+}
 
 
 def above(s: Style) -> float:
@@ -125,27 +166,55 @@ def below(s: Style) -> float:
     return BELOW_PER_PX * s.size + PARAGRAPH_GAP
 
 
+def pitch(first: Style, second: Style) -> float:
+    """Baseline-to-baseline distance from a paragraph's last line to the
+    next paragraph's first line."""
+    return MEASURED_PITCH.get((first.size, second.size), below(first) + above(second))
+
+
 def continuation(s: Style) -> float:
     return CONTINUATION_RATIO.get(s.size, DEFAULT_CONTINUATION_RATIO) * s.size
 
 
+def text_width(text: str, s: Style) -> float:
+    """Width of ``text`` in tablet px when set in the style's font."""
+    table, default = (ADVANCE_SERIF, DEFAULT_ADVANCE_SERIF) if s.serif else (ADVANCE_SANS, DEFAULT_ADVANCE_SANS)
+    return sum(table.get(c, default) for c in text) * s.size
+
+
+def line_width(s: Style) -> float:
+    """Room for text on one line of this style."""
+    return TEXT_WIDTH - s.indent
+
+
 def chars_per_line(s: Style) -> int:
-    """How many characters the tablet fits on one line of this style."""
-    em = EM_PER_CHAR_SERIF if s.serif else EM_PER_CHAR_SANS
-    return max(1, int((TEXT_WIDTH - s.indent) / (em * s.size)))
+    """Rough capacity of a line in average characters (the wrap itself
+    measures real glyph widths)."""
+    default = DEFAULT_ADVANCE_SERIF if s.serif else DEFAULT_ADVANCE_SANS
+    return max(1, int(line_width(s) / (default * s.size)))
 
 
-def wrap(text: str, width: int) -> list[str]:
-    """Break on spaces the way the tablet does, never inside a word."""
+def uses_fallback_font(text: str) -> bool:
+    return any(0x2190 <= ord(c) <= 0x25FF for c in text)
+
+
+def wrap(text: str, s: Style) -> list[str]:
+    """Break on spaces the way the tablet does: never inside a word, by the
+    measured glyph widths, keeping a line's leading whitespace."""
+    limit = line_width(s)
+    stripped = text.lstrip(" ")
+    lead = text[: len(text) - len(stripped)]
     out: list[str] = []
-    current = ""
-    for word in text.split(" "):
-        candidate = word if not current else current + " " + word
-        if len(candidate) > width and current:
+    current = lead
+    started = False
+    for word in stripped.split(" "):
+        candidate = word if not started else current + " " + word
+        if started and text_width(candidate, s) > limit:
             out.append(current)
             current = word
         else:
-            current = candidate
+            current = lead + candidate if not started else candidate
+        started = True
     out.append(current)
     return out
 
@@ -170,14 +239,18 @@ def lay_out_lines(paragraphs: Iterable[tuple[str, str]]) -> list[TextLine]:
     lines: list[TextLine] = []
     y = FIRST_BASELINE
     previous: Style | None = None
+    previous_fallback = False
     for k, (name, text) in enumerate(paragraphs):
         s = style(name)
         if previous is not None:
-            y += below(previous) + above(s)
+            y += pitch(previous, s)
         consumed = 0
-        for i, piece in enumerate(wrap(text, chars_per_line(s))):
+        for i, piece in enumerate(wrap(text, s)):
             if i:
                 y += continuation(s)
+            if previous_fallback and lines:
+                y += FALLBACK_LINE_EXTRA
+            previous_fallback = uses_fallback_font(piece)
             consumed += len(piece) + (1 if i else 0)
             lines.append(TextLine(k, s.name, piece, y, i == 0, consumed))
         previous = s
@@ -197,8 +270,8 @@ def paragraph_advance(name: str, text: str) -> float:
     """Vertical room a paragraph takes when followed by body text: its own
     lines plus the spacing to the next paragraph."""
     s = style(name)
-    n = len(wrap(text, chars_per_line(s)))
-    return (n - 1) * continuation(s) + below(s) + above(STYLES["PLAIN"])
+    n = len(wrap(text, s))
+    return (n - 1) * continuation(s) + pitch(s, STYLES["PLAIN"])
 
 
 # -- the painter -------------------------------------------------------------
@@ -229,4 +302,4 @@ def lines_per_page() -> int:
 
 def estimated_lines(paragraph: str, name: str = "PLAIN") -> int:
     """Lines the tablet will wrap a paragraph onto."""
-    return len(wrap(paragraph, chars_per_line(style(name))))
+    return len(wrap(paragraph, style(name)))

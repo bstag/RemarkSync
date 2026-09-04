@@ -77,11 +77,12 @@ Things to sanity-check against your own tablet backup on first use:
   `docs/adr/0001-page-coordinates-follow-the-tablet.md` and
   `textmetrics.py`): fonts, baselines, wrapping, indents, list markers and
   checkboxes match the device to within a pixel, and ink anchored to text
-  lines lands where the device puts it. One open point: the tablet renders
-  the style code it uses for subheadings as either a 46 px serif subheading
-  or a 36 px medium-weight body line, and the file does not say which; we
-  draw the subheading. Fonts are stand-ins (Georgia, Segoe UI) for the
-  device's own.
+  lines lands where the device puts it. Wrapping uses per-character glyph
+  advances measured from the exports. One open point: a 46 px serif
+  subheading seen on a device page carried the same style code as the 36 px
+  bold body line, so its real code is unknown and it is not decoded or
+  compiled yet. Fonts are stand-ins (Georgia, Segoe UI) for the device's
+  own.
 - **Base PDF pages** are drawn where the tablet draws them: at a fixed
   3.153 tablet pixels per PDF point, centred horizontally, top at the
   page top (physical size on the tablet's 157 mm screen; see
@@ -93,7 +94,7 @@ Things to sanity-check against your own tablet backup on first use:
   (`<uuid>.content` with formatVersion 2, `<uuid>.metadata`,
   `<uuid>/<page-uuid>.rm` with a SceneInfo block) and imports through the
   desktop app as of 2026-09. Markdown block markers become the tablet's
-  own paragraph styles: `#` a heading, `##` and deeper a subheading, `-`
+  own paragraph styles: `#` a heading, `##` and deeper a bold line, `-`
   a bullet (indented: nested), `1.` a numbered item (indented: nested),
   `- [ ]` and `- [x]` checkboxes; the text arrives styled and editable.
   Lines are never wrapped by the compiler: the tablet wraps typed text
@@ -114,8 +115,9 @@ Things to sanity-check against your own tablet backup on first use:
   `PEN_WIDTH_FACTOR` in `rmdata.py`). What is not modelled is texture:
   the tablet's pencil is grainy where ours is a smooth grey, and its
   marker has a chisel edge where ours is rounded.
-- Fonts: text blocks render with Segoe UI. (On font-less/offscreen
-  systems text shows as boxes — that's environmental, not a bug.)
+- Fonts: typed text renders with Georgia and Segoe UI standing in for
+  the device's serif and sans faces. (On font-less/offscreen systems text
+  shows as boxes — that's environmental, not a bug.)
 
 ## Architecture
 
@@ -130,8 +132,8 @@ src/remarksync/
                  (v5 and v6 adapters behind one decode_page)
   layout.py      page frame: PageModel → canvas size, paper rect, template or
                  underlay, dividers — every layout rule, no Qt
-  textmetrics.py line heights, text-box defaults, painter font size (shared by
-                 decoder, compiler and painter)
+  textmetrics.py the tablet's text layout: paragraph styles, fonts, glyph advances,
+                 baselines and wrapping (shared by decoder, compiler and painter)
   search.py      SearchIndex: SQLite FTS5, per-document refresh keyed on
                  lastModified, extractor seam, prefix-AND queries with snippets
   mdcompile.py   Markdown → paginated native text pages → .rmdoc zip

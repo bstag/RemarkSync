@@ -73,7 +73,7 @@ def markdown_to_paragraphs(md: str) -> list[tuple[str, str]]:
     for raw in md.splitlines():
         if raw.strip().startswith("```"):
             in_code = not in_code
-            paras.append(("PLAIN", "    \u2500\u2500\u2500\u2500\u2500"))
+            paras.append(("PLAIN", "    -----"))
             joinable = False
             continue
         if in_code:
