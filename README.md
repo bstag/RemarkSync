@@ -78,11 +78,10 @@ Things to sanity-check against your own tablet backup on first use:
   `textmetrics.py`): fonts, baselines, wrapping, indents, list markers and
   checkboxes match the device to within a pixel, and ink anchored to text
   lines lands where the device puts it. Wrapping uses per-character glyph
-  advances measured from the exports. One open point: a 46 px serif
-  subheading seen on a device page carried the same style code as the 36 px
-  bold body line, so its real code is unknown and it is not decoded or
-  compiled yet. Fonts are stand-ins (Georgia, Segoe UI) for the device's
-  own.
+  advances measured from the exports. The toolbar's Subheading and Bold
+  share a style code and differ only in format fields rmscene skips;
+  `rmformat.py` reads and writes those, so both round-trip. Fonts are
+  stand-ins (Georgia, Segoe UI) for the device's own.
 - **Base PDF pages** are drawn where the tablet draws them: at a fixed
   3.153 tablet pixels per PDF point, centred horizontally, top at the
   page top (physical size on the tablet's 157 mm screen; see
@@ -94,7 +93,7 @@ Things to sanity-check against your own tablet backup on first use:
   (`<uuid>.content` with formatVersion 2, `<uuid>.metadata`,
   `<uuid>/<page-uuid>.rm` with a SceneInfo block) and imports through the
   desktop app as of 2026-09. Markdown block markers become the tablet's
-  own paragraph styles: `#` a heading, `##` and deeper a bold line, `-`
+  own paragraph styles: `#` a heading, `##` a subheading, `###` and deeper a bold line, `-`
   a bullet (indented: nested), `1.` a numbered item (indented: nested),
   `- [ ]` and `- [x]` checkboxes; the text arrives styled and editable.
   Lines are never wrapped by the compiler: the tablet wraps typed text
