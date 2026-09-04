@@ -12,13 +12,14 @@ import math
 
 import fitz  # pymupdf
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QTextLayout, QTextOption
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QWidget
 
 from .layout import PageFrame, lay_out
 from .backup import TEMPLATE_BLANK, TEMPLATE_DOTS, TEMPLATE_GRID, TEMPLATE_ISOMETRIC, TEMPLATE_RULED, DocItem, PageRef
 from .rmdata import PageModel, Stroke, decode_page
-from .textmetrics import TEXT_FONT_PX, TEXT_LEFT_PAD, TEXT_LINE_PAD, TEXT_MIN_BOX_WIDTH, TEXT_TOP_Y, line_height
+from .textmetrics import (CHECKBOX_GAP, CHECKBOX_SIZE, FONT_SANS, FONT_SERIF, MARKER_GAP, TEXT_LEFT_PAD,
+                          lay_out_lines, style)
 
 _TEMPLATE_PEN = QColor(0xB3, 0xB3, 0xB3)
 
@@ -375,40 +376,53 @@ class PageCanvas(QWidget):
             painter.restore()
 
     def _paint_texts(self, painter: QPainter, model: PageModel) -> None:
-        """Typed text, one paragraph per text line: each paragraph starts at
-        the same anchor y the decoder used to pin ink to it (top offset plus
-        the accumulated per-style line heights), so text and anchored ink
-        agree. Long paragraphs wrap inside the block width."""
+        """Typed text, line by line at the baselines the tablet uses (see
+        textmetrics), in a serif or sans face sized per paragraph style,
+        with list markers and checkboxes drawn in the indent."""
         if not model.texts:
             return
         painter.save()
-        option = QTextOption()
-        option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
         for block in model.texts:
             if not block.text.strip():
                 continue
-            box_width = max(block.width, TEXT_MIN_BOX_WIDTH)
-            paragraphs = block.paragraphs or [("PLAIN", part) for part in block.text.split("\n")]
-            line_y = block.pos_y + TEXT_TOP_Y + TEXT_LINE_PAD
-            for style, text in paragraphs:
-                height = line_height(style)
-                if text.strip():
-                    font = QFont("Segoe UI")
-                    font.setPixelSize(TEXT_FONT_PX)
-                    font.setBold(style in ("BOLD", "HEADING"))
-                    layout = QTextLayout(text, font, painter.device())
-                    layout.setTextOption(option)
-                    layout.setCacheEnabled(True)
-                    layout.beginLayout()
-                    wrap_y = line_y
-                    while True:
-                        line = layout.createLine()
-                        if not line.isValid():
-                            break
-                        line.setLineWidth(box_width)
-                        line.setPosition(QPointF(block.pos_x + TEXT_LEFT_PAD, wrap_y))
-                        line.draw(painter, QPointF(0, 0))
-                        wrap_y += line.height()
-                    layout.endLayout()
-                line_y += height
+            lines = block.lines or lay_out_lines(block.paragraphs)
+            counters: dict[str, int] = {}  # running numbers for numbered lists
+            last_style = None
+            for ln in lines:
+                st = style(ln.style)
+                if ln.first:
+                    if st.marker in ("number", "letter"):
+                        counters[st.name] = counters.get(st.name, 0) + 1 if last_style == st.name else 1
+                    last_style = st.name
+                x = block.pos_x + TEXT_LEFT_PAD + st.indent
+                y = block.pos_y + ln.baseline
+                font = QFont(FONT_SERIF if st.serif else FONT_SANS)
+                font.setPixelSize(int(round(st.size)))
+                font.setWeight(QFont.Medium if st.weight >= 500 else QFont.Normal)
+                painter.setFont(font)
+                painter.setPen(QColor("#1a1a1a"))
+                if ln.text:
+                    painter.drawText(QPointF(x, y), ln.text)
+                if ln.first and st.marker:
+                    self._paint_marker(painter, st.marker, x, y, st.size, counters.get(st.name, 1))
         painter.restore()
+
+    @staticmethod
+    def _paint_marker(painter: QPainter, marker: str, x: float, baseline: float, size: float, number: int) -> None:
+        if marker in ("bullet", "bullet2"):
+            painter.drawText(QPointF(x - MARKER_GAP, baseline), "\u2022" if marker == "bullet" else "\u25e6")
+        elif marker in ("number", "letter"):
+            label = f"{number}." if marker == "number" else f"{chr(96 + ((number - 1) % 26) + 1)}."
+            width = painter.fontMetrics().horizontalAdvance(label)
+            painter.drawText(QPointF(x - MARKER_GAP + 12 - width, baseline), label)
+        elif marker in ("box", "box_checked"):
+            top = baseline - CHECKBOX_SIZE
+            rect = QRectF(x - CHECKBOX_GAP, top, CHECKBOX_SIZE, CHECKBOX_SIZE)
+            painter.save()
+            painter.setPen(QPen(QColor("#1a1a1a"), 2))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(rect)
+            if marker == "box_checked":
+                painter.drawLine(QPointF(rect.left() + 5, rect.top() + 13), QPointF(rect.left() + 11, rect.bottom() - 5))
+                painter.drawLine(QPointF(rect.left() + 11, rect.bottom() - 5), QPointF(rect.right() - 4, rect.top() + 5))
+            painter.restore()

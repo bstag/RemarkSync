@@ -22,11 +22,24 @@ import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from rmscene import read_tree
+from rmscene import CrdtId, read_tree
 from rmscene import scene_items as si
 from rmscene.text import TextDocument
 
-from .textmetrics import LINE_HEIGHTS, TEXT_TOP_Y, paragraphs_height
+from .textmetrics import TextLine, block_height, lay_out_lines, style_name
+
+
+def _unknown_paragraph_style(cls, value):
+    # software 3.x writes paragraph style codes rmscene 0.8 has no name for
+    # (numbered lists, nested checkboxes); keep the code instead of dropping
+    # the paragraph's style
+    member = int.__new__(cls, value)
+    member._name_ = f"STYLE_{value}"
+    member._value_ = value
+    return member
+
+
+si.ParagraphStyle._missing_ = classmethod(_unknown_paragraph_style)
 
 log = logging.getLogger(__name__)
 
@@ -137,7 +150,12 @@ class Stroke:
 
 @dataclass
 class TextBlock:
-    """Typed text box in page coordinates (top-left corner + width)."""
+    """Typed text box in page coordinates (top-left corner + width).
+
+    ``paragraphs`` are (style, text) as typed; ``lines`` are what the tablet
+    draws: each paragraph wrapped into lines with a baseline (relative to
+    ``pos_y``), the way :mod:`textmetrics` models the device's layout.
+    """
 
     text: str
     pos_x: float
@@ -145,6 +163,7 @@ class TextBlock:
     width: float
     height: float = 70.0
     paragraphs: list[tuple[str, str]] = field(default_factory=list)  # (style, text)
+    lines: list[TextLine] = field(default_factory=list)
 
 
 @dataclass
@@ -210,23 +229,52 @@ def _visible(group: si.Group) -> bool:
         return True
 
 
+def _paragraphs(doc: TextDocument) -> list[tuple[str, str]]:
+    """(style name, text) per paragraph, as the tablet counts them. rmscene
+    drops an empty first paragraph when the text starts with a newline
+    (the file's line count is one higher than its paragraph count); that
+    line is restored so everything below it lands where the device puts it."""
+    paras = []
+    for para in doc.contents:
+        code = getattr(para.style, "value", None)
+        paras.append((style_name(int(code)) if code is not None else "PLAIN", str(para)))
+    if doc.contents and doc.contents[0].start_id != CrdtId(0, 0):
+        paras.insert(0, ("PLAIN", ""))
+    return paras
+
+
 def _anchor_positions(root_text) -> dict:
-    """Vertical position (raw coords) of each text-line anchor: the top of
-    the first line box, then accumulated per-paragraph line heights. Ink
-    layers pinned to a line move with it."""
+    """Raw y of each text character's line baseline, which is what an
+    anchored ink layer is pinned to. A paragraph's start id is the newline
+    ending the previous paragraph, so it rides that paragraph's last line."""
     pos = {}
     if root_text is None:
         return pos
     try:
         doc = TextDocument.from_scene_item(root_text)
-        ypos = root_text.pos_y + TEXT_TOP_Y
-        for para in doc.contents:
-            pos[para.start_id] = ypos
+        paras = _paragraphs(doc)
+        lines = lay_out_lines(paras)
+        offset = len(paras) - len(doc.contents)  # 1 when a hidden first line was restored
+        by_para: dict[int, list[TextLine]] = {}
+        for ln in lines:
+            by_para.setdefault(ln.paragraph, []).append(ln)
+        previous_last = None
+        for i, para in enumerate(doc.contents):
+            k = i + offset
+            plines = by_para.get(k) or []
+            # the start id sits at the end of the previous paragraph's last line
+            if previous_last is not None:
+                pos[para.start_id] = root_text.pos_y + previous_last.baseline
+            elif plines:
+                pos[para.start_id] = root_text.pos_y + plines[0].baseline
+            n = 0
             for sub in para.contents:
                 for char_id in sub.i:
-                    pos[char_id] = ypos
-            style = getattr(para.style, "value", None)
-            ypos += LINE_HEIGHTS.get(getattr(style, "name", "PLAIN"), 70)
+                    line = next((ln for ln in plines if n < ln.chars), plines[-1] if plines else None)
+                    if line is not None:
+                        pos[char_id] = root_text.pos_y + line.baseline
+                    n += 1
+            previous_last = plines[-1] if plines else previous_last
     except Exception as exc:
         log.debug("anchor extraction failed: %s", exc)
     return pos
@@ -302,15 +350,13 @@ def _decode_v6(tree) -> PageModel:
         block = TextBlock(text="", pos_x=t.pos_x + x_shift + ax, pos_y=t.pos_y + ay, width=t.width)
         try:
             doc = TextDocument.from_scene_item(t)
-            for para in doc.contents:
-                style = getattr(para.style, "value", None)
-                style_name = getattr(style, "name", "PLAIN")
-                block.paragraphs.append((style_name, str(para)))
+            block.paragraphs = _paragraphs(doc)
             block.text = "\n".join(text for _, text in block.paragraphs)
-            block.height = paragraphs_height(style for style, _ in block.paragraphs)
+            block.lines = lay_out_lines(block.paragraphs)
+            block.height = block_height(block.paragraphs)
         except Exception as exc:
             log.debug("styled text extraction failed: %s", exc)
-            block.height = LINE_HEIGHTS["PLAIN"] * max(1, block.text.count("\n") + 1)
+            block.height = 70.0 * max(1, block.text.count("\n") + 1)
         return block
 
     if tree.root is not None:
