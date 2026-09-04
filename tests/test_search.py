@@ -2,7 +2,8 @@
 
 import json
 
-from remarksync.backup import iter_docs, scan_root
+from remarksync.backup import DocItem, PageRef, iter_docs, scan_root
+from remarksync.recognize import PageSource
 from remarksync.rmdata import PageModel, TextBlock
 from remarksync.search import SearchIndex, typed_text_and_highlights
 
@@ -119,17 +120,18 @@ def test_refresh_can_be_cancelled_and_keeps_finished_documents(backup_root, tmp_
 
 
 def test_extractor_seam_joins_every_extractor(tmp_path):
-    def fake_ocr(page: PageModel) -> str:
+    def fake_ocr(source: PageSource) -> str:
         return "handwriting says hello"
 
     index = SearchIndex(tmp_path / "index.db", extractors=[typed_text_and_highlights, fake_ocr])
     page = PageModel(texts=[TextBlock(text="typed line", pos_x=0, pos_y=0, width=100)])
-    assert index.page_text_of(page) == "typed line\nhandwriting says hello"
-    assert SearchIndex(tmp_path / "other.db").page_text_of(page) == "typed line"
+    source = PageSource(DocItem(uuid="d"), PageRef(index=0, rm_path=None), page)
+    assert index.page_text_of(source) == "typed line\nhandwriting says hello"
+    assert SearchIndex(tmp_path / "other.db").page_text_of(source) == "typed line"
 
 
 def test_extractors_feed_the_index(backup_root, tmp_path):
-    index = SearchIndex(tmp_path / "index.db", extractors=[lambda page: "xylophone"])
+    index = SearchIndex(tmp_path / "index.db", extractors=[lambda source: "xylophone"])
     index.refresh([d for d in _docs(backup_root) if d.uuid == PDF_UUID])
     hits = index.query("xylophone")
     assert hits and hits[0].doc_uuid == PDF_UUID

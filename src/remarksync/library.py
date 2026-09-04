@@ -17,7 +17,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from .backup import DocItem, iter_docs, scan_root
-from .search import IndexReport, Progress, SearchHit, SearchIndex
+from .recognize import CACHE_NAME, RecognitionCache, WindowsInkExtractor, tablet_conversion, windows_ink_available
+from .search import DEFAULT_EXTRACTORS, IndexReport, Progress, SearchHit, SearchIndex
 
 INDEX_NAME = ".remarksync-index.db"
 
@@ -31,12 +32,28 @@ class NoIndexError(LookupError):
 class Library:
     """An opened backup folder. Scans on construction; ``refresh`` rescans."""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, handwriting: bool = False):
         self.root = Path(root)
         self.tree: list = []
         self._docs: dict[str, DocItem] = {}
         self._index = SearchIndex(self.index_path)
+        self.recognition = RecognitionCache(self.root / CACHE_NAME)
+        self.handwriting = handwriting
         self.refresh()
+
+    @property
+    def handwriting(self) -> bool:
+        """Whether indexing also recognises handwriting with the Windows
+        ink recogniser (the tablet's own conversions are always indexed)."""
+        return self._handwriting
+
+    @handwriting.setter
+    def handwriting(self, on: bool) -> None:
+        self._handwriting = bool(on) and windows_ink_available()
+        extractors = list(DEFAULT_EXTRACTORS) + [tablet_conversion]
+        if self._handwriting:
+            extractors.append(WindowsInkExtractor(self.recognition))
+        self._index.extractors = extractors
 
     # ------------------------------------------------------------ documents
 

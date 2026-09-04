@@ -9,9 +9,10 @@ need (re)indexing, how a page becomes searchable text, and querying.
   changed or new ones re-extracted, vanished ones purged. ``force=True``
   is the full rebuild.
 * **Extractor seam.** A page's searchable text is the newline-joined output
-  of the index's extractors, each a ``PageModel -> str``. Today there is one
-  (typed text plus PDF-highlight text); an OCR pass over handwriting plugs
-  in as a second entry in the list.
+  of the index's extractors, each a ``PageSource -> str`` (the document,
+  the page and its decoded model). The default is typed text plus
+  PDF-highlight text; :mod:`recognize` adds the tablet's own handwriting
+  conversions and, on Windows, ink recognition.
 * **Connections.** SQLite connections cannot cross threads, so every
   operation opens its own connection on the calling thread (WAL mode, so
   readers never wait on the indexer). The schema is ensured once.
@@ -28,7 +29,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .backup import DocItem
+from .backup import DocItem, PageRef
+from .recognize import PageSource
 from .rmdata import PageModel, decode_page, page_text
 
 log = logging.getLogger(__name__)
@@ -50,14 +52,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
 );
 """
 
-Extractor = Callable[[PageModel], str]
+Extractor = Callable[[PageSource], str]
 # progress(doc_name) -> keep going? Returning False stops the refresh.
 Progress = Callable[[str], bool | None]
 
 
-def typed_text_and_highlights(page: PageModel) -> str:
+def typed_text_and_highlights(source: PageSource) -> str:
     """Typed text blocks plus text highlighted inside a base PDF."""
-    return page_text(page)
+    return page_text(source.model)
 
 
 DEFAULT_EXTRACTORS: tuple[Extractor, ...] = (typed_text_and_highlights,)
@@ -95,9 +97,9 @@ class SearchIndex:
 
     # ------------------------------------------------------------ extraction
 
-    def page_text_of(self, page: PageModel) -> str:
+    def page_text_of(self, source: PageSource) -> str:
         """The searchable text of a page: every extractor's output, joined."""
-        parts = [ex(page) for ex in self.extractors]
+        parts = [ex(source) for ex in self.extractors]
         return "\n".join(p for p in parts if p).strip()
 
     # --------------------------------------------------------------- refresh
@@ -146,7 +148,7 @@ class SearchIndex:
         )
         count = 0
         for page in doc.pages:
-            text = self.page_text_of(decode_page(page.rm_path)) if page.rm_path is not None else ""
+            text = self.page_text_of(PageSource(doc, page, decode_page(page.rm_path))) if page.rm_path is not None else ""
             # the doc name is searchable from every page
             body = (doc.name + "\n" + text).strip()
             if not body:

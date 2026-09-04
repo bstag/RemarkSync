@@ -3,6 +3,7 @@
     remarksync                 launch the GUI
     remarksync pull DIR        bring a raw backup up to date from the tablet (changed documents only)
     remarksync scan DIR        print the document tree of a backup
+    remarksync index DIR       update the search index (--handwriting to recognise ink)
     remarksync compile MD OUT  compile Markdown to a .rmdoc
 """
 
@@ -27,6 +28,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p_scan = sub.add_parser("scan", help="print the document tree of a backup")
     p_scan.add_argument("root", type=str)
+
+    p_index = sub.add_parser("index", help="update the search index of a backup")
+    p_index.add_argument("root", type=str)
+    p_index.add_argument("--handwriting", action="store_true", help="also recognise handwriting (Windows ink recogniser; cached)")
+    p_index.add_argument("--rebuild", action="store_true", help="re-index every document")
 
     p_compile = sub.add_parser("compile", help="compile Markdown into a .rmdoc")
     p_compile.add_argument("markdown", type=str)
@@ -64,6 +70,23 @@ def main(argv: list[str] | None = None) -> int:
 
         show(library.tree)
         print(f"total docs: {len(library)}")
+        return 0
+
+    if args.command == "index":
+        import time
+        from pathlib import Path
+
+        from .library import Library
+
+        library = Library(Path(args.root), handwriting=args.handwriting)
+        if args.handwriting and not library.handwriting:
+            print("handwriting recognition is not available (needs Windows and the winrt inking package)")
+        t0 = time.perf_counter()
+        run = library.rebuild_index if args.rebuild else library.refresh_index
+        report = run(progress=lambda name: print(f"  indexed {name}") or True)
+        print(f"{'done' if report.completed else 'stopped'}: {report.indexed} documents indexed ({report.pages} pages), "
+              f"{report.skipped} unchanged, {report.removed} removed, {time.perf_counter() - t0:.0f} s; "
+              f"recognitions cached: {len(library.recognition)}")
         return 0
 
     if args.command == "compile":
