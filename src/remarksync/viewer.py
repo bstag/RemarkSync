@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QWidget
 from .layout import PageFrame, lay_out
 from .backup import TEMPLATE_BLANK, TEMPLATE_DOTS, TEMPLATE_GRID, TEMPLATE_ISOMETRIC, TEMPLATE_RULED, DocItem, PageRef
 from .rmdata import PageModel, Stroke, decode_page
-from .textmetrics import TEXT_FONT_PX, TEXT_MIN_BOX_WIDTH, TEXT_TOP_Y, line_height
+from .textmetrics import TEXT_FONT_PX, TEXT_LEFT_PAD, TEXT_LINE_PAD, TEXT_MIN_BOX_WIDTH, TEXT_TOP_Y, line_height
 
 _TEMPLATE_PEN = QColor(0xB3, 0xB3, 0xB3)
 
@@ -289,7 +289,7 @@ class PageCanvas(QWidget):
                 continue
             box_width = max(block.width, TEXT_MIN_BOX_WIDTH)
             paragraphs = block.paragraphs or [("PLAIN", part) for part in block.text.split("\n")]
-            line_y = block.pos_y + TEXT_TOP_Y
+            line_y = block.pos_y + TEXT_TOP_Y + TEXT_LINE_PAD
             for style, text in paragraphs:
                 height = line_height(style)
                 if text.strip():
@@ -306,7 +306,7 @@ class PageCanvas(QWidget):
                         if not line.isValid():
                             break
                         line.setLineWidth(box_width)
-                        line.setPosition(QPointF(block.pos_x, wrap_y))
+                        line.setPosition(QPointF(block.pos_x + TEXT_LEFT_PAD, wrap_y))
                         line.draw(painter, QPointF(0, 0))
                         wrap_y += line.height()
                     layout.endLayout()

@@ -80,12 +80,6 @@ PEN_WIDTHS: dict[str, float] = {
 HIGHLIGHTER_TOOLS = {"HIGHLIGHTER_1", "HIGHLIGHTER_2", "SHADER", "MARKER_1", "MARKER_2"}
 ERASER_TOOLS = {"ERASER", "ERASER_AREA"}
 
-# Typed text blocks store pos_y relative to the page centre (observed on
-# device: rmscene's default pos_y=234 lands mid-page, and -780 lands near the
-# top), whereas ink y is measured from the page top (verified against the
-# reMarkable desktop app). This is the only place that difference lives.
-TEXT_Y_ORIGIN = PAGE_HEIGHT / 2
-
 V5_HEADER = b"reMarkable .lines file, version=5"
 V5_COLORS = {0: "BLACK", 1: "GRAY", 2: "WHITE"}
 
@@ -194,8 +188,9 @@ def _visible(group: si.Group) -> bool:
 
 
 def _anchor_positions(root_text) -> dict:
-    """Vertical position (raw coords) of each text-line anchor, mirroring
-    rmc: root text position, then accumulated per-paragraph line heights."""
+    """Vertical position (raw coords) of each text-line anchor: the top of
+    the first line box, then accumulated per-paragraph line heights. Ink
+    layers pinned to a line move with it."""
     pos = {}
     if root_text is None:
         return pos
@@ -224,9 +219,9 @@ def _group_anchor(group: si.Group, anchor_pos: dict) -> tuple[float, float]:
 
 
 def _decode_v6(tree) -> PageModel:
-    """v6 stores x centre-relative and ink y from the page top (rmc's default
-    bounding box is x in [-W/2, W/2], y in [0, H]); shift x, and text y by
-    ``TEXT_Y_ORIGIN``, so the model is in page coordinates."""
+    """v6 stores x centre-relative and y from the page top, for ink and
+    typed text alike (verified against the tablet's own PDF export, see
+    ADR-0001); shift x so the model is in page coordinates."""
     page = PageModel()
     anchor_pos = _anchor_positions(tree.root_text)
     x_shift = PAGE_WIDTH / 2
@@ -275,7 +270,7 @@ def _decode_v6(tree) -> PageModel:
         )
 
     def text_block(t: si.Text, ax: float, ay: float) -> TextBlock:
-        block = TextBlock(text="", pos_x=t.pos_x + x_shift + ax, pos_y=t.pos_y + TEXT_Y_ORIGIN + ay, width=t.width)
+        block = TextBlock(text="", pos_x=t.pos_x + x_shift + ax, pos_y=t.pos_y + ay, width=t.width)
         try:
             doc = TextDocument.from_scene_item(t)
             for para in doc.contents:

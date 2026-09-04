@@ -49,7 +49,9 @@ def test_typed_text_extracted(backup_root):
     assert "quantum computing" in page_text(page)
     assert any("quantum" in t.text for t in page.texts)
     block = next(t for t in page.texts if "quantum" in t.text)
-    assert block.height == 70  # one PLAIN paragraph
+    assert block.height == pytest.approx(69.3)  # one PLAIN paragraph
+    # text y is measured from the page top, like ink: no centre shift
+    assert block.pos_y == 234.0  # rmscene's simple_text_document default
 
 
 def test_pressure_varying_widths_are_kept_per_point():

@@ -72,10 +72,12 @@ past its edges.
 
 Things to sanity-check against your own tablet backup on first use:
 
-- **Typed text position** is interpreted as centre-relative in y (ink is
-  top-relative). No typed text existed in the backup this was developed
-  against, so if typed text shows in the wrong place on your files the
-  one-line fix is `TEXT_Y_ORIGIN` in `rmdata.py`.
+- **Typed text** is placed with numbers fitted against the tablet's own
+  PDF export of a typed page (line height 69.3 px, first line 60 px below
+  the block position, see `docs/adr/0001-page-coordinates-follow-the-tablet.md`).
+  Only the plain paragraph style was measured; heading, bullet and checkbox
+  heights are rmc's values, so a page mixing those styles with anchored ink
+  may drift slightly. The constants live in `textmetrics.py`.
 - **Base PDF pages** are drawn where the tablet draws them: at a fixed
   3.153 tablet pixels per PDF point, centred horizontally, top at the
   page top (physical size on the tablet's 157 mm screen; see
