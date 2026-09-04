@@ -139,7 +139,7 @@ src/remarksync/
   viewer.py      Qt painter: draws a PageFrame (underlay, template, highlights,
                  ink, text, dividers); computes no geometry
   gui.py         main window: tree, viewer, search dock, toolbar actions,
-                 background index worker
+                 background workers for indexing and page decoding
   pull.py        scp-based raw backup pull from the tablet
 ```
 
