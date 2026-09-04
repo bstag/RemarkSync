@@ -155,12 +155,14 @@ def test_opening_another_folder_stops_indexing(qapp, backup_root, tmp_path, monk
 
 
 @pytest.fixture(autouse=True)
-def isolated_settings(tmp_path):
-    """Tests never read or write the user's real RemarkSync settings."""
+def isolated_settings(tmp_path, monkeypatch):
+    """Tests never read or write the user's real RemarkSync settings: the
+    window gets a settings class backed by an ini file in tmp_path."""
+    import remarksync.gui as gui
     from PySide6.QtCore import QSettings
 
-    QSettings.setDefaultFormat(QSettings.IniFormat)
-    QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(tmp_path / "settings"))
+    ini = tmp_path / "settings.ini"
+    monkeypatch.setattr(gui, "QSettings", lambda *_args: QSettings(str(ini), QSettings.IniFormat))
     yield
 
 
