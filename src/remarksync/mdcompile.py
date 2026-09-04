@@ -27,94 +27,168 @@ import zipfile
 from pathlib import Path
 
 from rmscene import CrdtId, LwwValue, PageInfoBlock, RootTextBlock, SceneInfo, simple_text_document, write_blocks
+from rmscene import scene_items as si
 
 from .rmdata import PAGE_HEIGHT, PAGE_WIDTH
+from .textmetrics import STYLE_CODES
+
+STYLE_CODE_BY_NAME = {name: code for code, name in STYLE_CODES.items()}
 
 # Text-box placement and page fill come from the shared text metrics, so the
 # compiler, the page decoder and the painter agree on where text sits.
-from .textmetrics import TEXT_POS_X, TEXT_POS_Y, TEXT_WIDTH, estimated_lines, lines_per_page
+from .textmetrics import TEXT_POS_X, TEXT_POS_Y, TEXT_WIDTH, page_text_budget, paragraph_advance
 
 _LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
 _IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _EMPH_RE = re.compile(r"(\*\*|__|\*|_|`)")
-# lines that start a paragraph of their own and are never joined to the
-# previous line: headings, list items, block quotes, tables, indented code
-_BLOCK_START_RE = re.compile(r"^(\s*([-*+]|\d+[.)])\s+|#{1,6}\s|>|\||\s{4,}|\t)")
 
 
-def markdown_to_text(md: str) -> str:
-    """Flatten markdown to plain text, keeping heading/bullet markers that
-    rmc-style extraction would re-produce (so content round-trips).
+# Markdown block markers and the paragraph style they become.
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+_BULLET_RE = re.compile(r"^(\s*)[-*+]\s+(.*)$")
+_NUMBERED_RE = re.compile(r"^(\s*)\d+[.)]\s+(.*)$")
+_CHECKBOX_RE = re.compile(r"^(\s*)[-*+]\s+\[( |x|X)\]\s+(.*)$")
+
+
+def _inline(text: str) -> str:
+    text = _IMAGE_RE.sub(r"[image: \1]", text)
+    text = _LINK_RE.sub(r"\1 (\2)", text)
+    return _EMPH_RE.sub("", text)
+
+
+def markdown_to_paragraphs(md: str) -> list[tuple[str, str]]:
+    """Markdown as (style, text) paragraphs the way the tablet types them:
+    ``#`` headings become HEADING, deeper headings the tablet's subheading
+    (BOLD), ``-`` items BULLET (nested: BULLET2), ``1.`` items NUMBERED
+    (nested: NUMBERED2), ``- [ ]`` and ``- [x]`` the checkbox styles, code
+    is kept indented, and everything else is PLAIN.
 
     Markdown sources are usually hard-wrapped; a single newline inside a
-    paragraph is a soft break, so those lines are joined into one
-    paragraph and the tablet wraps it. Blank lines, headings, list items,
-    quotes, tables and code keep their own lines.
+    paragraph is a soft break, so those lines are joined and the tablet
+    wraps them. A blank line becomes an empty paragraph, as on the device.
     """
-    lines_out: list[str] = []
+    paras: list[tuple[str, str]] = []
     in_code = False
-    joinable = False  # the previous output line is prose that may continue
+    joinable = False  # the previous paragraph is prose that may continue
     for raw in md.splitlines():
         if raw.strip().startswith("```"):
             in_code = not in_code
-            lines_out.append("    ─────")
+            paras.append(("PLAIN", "    \u2500\u2500\u2500\u2500\u2500"))
             joinable = False
             continue
         if in_code:
-            lines_out.append("    " + raw)
+            paras.append(("PLAIN", "    " + raw))
             joinable = False
             continue
-        line = _IMAGE_RE.sub(r"[image: \1]", raw)
-        line = _LINK_RE.sub(r"\1 (\2)", line)
-        line = _EMPH_RE.sub("", line)
-        if not line.strip():
-            lines_out.append("")
+        if not raw.strip():
+            paras.append(("PLAIN", ""))
             joinable = False
             continue
-        block_start = bool(_BLOCK_START_RE.match(raw))
-        if joinable and not block_start and not raw.rstrip().endswith("  "):
-            lines_out[-1] = lines_out[-1].rstrip() + " " + line.strip()
+        m = _HEADING_RE.match(raw)
+        if m:
+            paras.append(("HEADING" if len(m.group(1)) == 1 else "BOLD", _inline(m.group(2)).strip()))
+            joinable = False
+            continue
+        m = _CHECKBOX_RE.match(raw)
+        if m:
+            nested = len(m.group(1)) >= 2
+            checked = m.group(2).lower() == "x"
+            style = "CHECKBOX2" if nested else ("CHECKBOX_CHECKED" if checked else "CHECKBOX")
+            paras.append((style, _inline(m.group(3)).strip()))
+            joinable = False
+            continue
+        m = _BULLET_RE.match(raw)
+        if m:
+            paras.append(("BULLET2" if len(m.group(1)) >= 2 else "BULLET", _inline(m.group(2)).strip()))
+            joinable = False
+            continue
+        m = _NUMBERED_RE.match(raw)
+        if m:
+            paras.append(("NUMBERED2" if len(m.group(1)) >= 2 else "NUMBERED", _inline(m.group(2)).strip()))
+            joinable = False
+            continue
+        if raw.startswith(("    ", "\t", ">", "|")):
+            paras.append(("PLAIN", _inline(raw)))
+            joinable = False
+            continue
+        line = _inline(raw).strip()
+        if joinable and paras and not paras[-1][1].endswith("  "):
+            paras[-1] = (paras[-1][0], paras[-1][1].rstrip() + " " + line)
         else:
-            lines_out.append(line)
-        # a heading, list item or quote line may itself be continued only by
-        # an indented continuation, which the regex treats as a block start
-        joinable = not block_start
-    return "\n".join(lines_out)
+            paras.append(("PLAIN", line))
+        joinable = True
+    return paras
+
+
+_MARKERS = {
+    "HEADING": "# ", "BOLD": "## ", "BULLET": "- ", "BULLET2": "  - ", "NUMBERED": "1. ", "NUMBERED2": "   a. ",
+    "CHECKBOX": "- [ ] ", "CHECKBOX_CHECKED": "- [x] ", "CHECKBOX2": "  - [ ] ",
+}
+
+
+def markdown_to_text(md: str) -> str:
+    """Flatten markdown to plain text with the block markers rmc-style
+    extraction would re-produce, so content round-trips as text."""
+    return "\n".join(_MARKERS.get(style, "") + text if text else "" for style, text in markdown_to_paragraphs(md))
+
+
+def paginate(paragraphs: list[tuple[str, str]]) -> list[list[tuple[str, str]]]:
+    """Split styled paragraphs into pages of about one screen each, breaking
+    only between paragraphs. Each paragraph is charged the vertical room
+    the tablet gives it (its wrapped lines plus paragraph spacing); a long
+    paragraph is never split."""
+    budget = page_text_budget()
+    pages: list[list[tuple[str, str]]] = []
+    current: list[tuple[str, str]] = []
+    used = 0.0
+    for style, text in paragraphs:
+        cost = paragraph_advance(style, text)
+        if current and used + cost > budget:
+            pages.append(current)
+            current, used = [], 0.0
+        current.append((style, text))
+        used += cost
+    if current:
+        pages.append(current)
+    return pages or [[("PLAIN", "")]]
 
 
 def paginate_text(text: str) -> list[str]:
-    """Split text into pages of about one screen each, breaking only between
-    paragraphs. Lines are never wrapped here: the tablet wraps typed text
-    itself inside the text box, and a hard wrap would show as short lines
-    on the device. Each paragraph is charged the number of lines the tablet
-    will wrap it onto."""
-    budget = lines_per_page()
-    pages: list[str] = []
-    current: list[str] = []
-    used = 0
-    for paragraph in text.splitlines():
-        cost = estimated_lines(paragraph)
-        if current and used + cost > budget:
-            pages.append("\n".join(current))
-            current, used = [], 0
-        current.append(paragraph)
-        used += cost
-    if current:
-        pages.append("\n".join(current))
-    return pages or [""]
+    """Plain-text pagination (every line a PLAIN paragraph)."""
+    pages = paginate([("PLAIN", line) for line in text.splitlines()] or [("PLAIN", "")])
+    return ["\n".join(t for _, t in page) for page in pages]
 
 
-def page_rm_bytes(text: str, author_uuid) -> bytes:
-    """A software-3.x page holding one text block: rmscene's simple text
-    document, with the SceneInfo block every device-written page carries
-    and the text box where the device puts it."""
+def page_rm_bytes(paragraphs, author_uuid) -> bytes:
+    """A software-3.x page holding one text block with per-paragraph
+    styles: rmscene's simple text document (one text item whose characters
+    get consecutive ids from (1, 16)), the SceneInfo block every device
+    page carries, the text box where the device puts it, and a style entry
+    per paragraph keyed the way the tablet keys them: the root id for the
+    first paragraph, the id of the newline ending the previous paragraph
+    for the rest."""
+    if isinstance(paragraphs, str):
+        paragraphs = [("PLAIN", line) for line in paragraphs.split("\n")]
+    text = "\n".join(t for _, t in paragraphs)
     blocks = list(simple_text_document(text, author_uuid=author_uuid))
     out: list = []
+    first_char = 16  # simple_text_document's single text item starts at CrdtId(1, 16)
     for block in blocks:
         if isinstance(block, RootTextBlock):
             block.value.pos_x = TEXT_POS_X
             block.value.pos_y = TEXT_POS_Y
             block.value.width = TEXT_WIDTH
+            styles = {}
+            stamp = first_char + len(text) + 1
+            offset = 0
+            for k, (style, t) in enumerate(paragraphs):
+                key = CrdtId(0, 0) if k == 0 else CrdtId(1, first_char + offset - 1)
+                code = STYLE_CODE_BY_NAME.get(style, 1)
+                if code != 1 or k == 0:
+                    styles[key] = LwwValue(timestamp=CrdtId(1, stamp), value=si.ParagraphStyle(code))
+                    stamp += 1
+                offset += len(t) + 1
+            block.value.styles = styles
         out.append(block)
         if isinstance(block, PageInfoBlock):
             out.append(
@@ -135,7 +209,7 @@ def _page_order_key(index: int) -> str:
     return f"b{chr(97 + index // 26)}{chr(97 + index % 26)}"
 
 
-def build_rmdoc(title: str, page_texts: list[str]) -> bytes:
+def build_rmdoc(title: str, page_texts: list) -> bytes:
     """Assemble the .rmdoc zip the way software 3.x lays a document out:
     ``<uuid>.content`` (formatVersion 2, pages under cPages with UUID ids),
     ``<uuid>.metadata``, and one ``<uuid>/<page-uuid>.rm`` per page."""
@@ -203,6 +277,6 @@ def build_rmdoc(title: str, page_texts: list[str]) -> bytes:
 
 def markdown_to_rmdoc(md: str, title: str, out_path: Path) -> Path:
     out_path = Path(out_path)
-    pages = paginate_text(markdown_to_text(md))
+    pages = paginate(markdown_to_paragraphs(md))
     out_path.write_bytes(build_rmdoc(title, pages))
     return out_path

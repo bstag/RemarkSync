@@ -45,11 +45,43 @@ def test_pagination_fills_one_screen_per_page_without_wrapping():
     assert all(p.count("\n") < 22 for p in pages)
 
     # a long paragraph is never broken, but it costs the lines it will wrap onto
-    long = "word " * 100  # ~500 chars -> 6 tablet lines
-    pages = paginate_text("\n".join([long] * 5))
-    assert all(long.strip() in p or long in p for p in pages)
-    assert len(pages) == 2  # 5 x 6 = 30 lines over a 22-line budget
-    assert all(p.count("\n") <= 2 for p in pages)
+    from remarksync.textmetrics import page_text_budget, paragraph_advance
+
+    long = ("word " * 100).strip()  # ~500 chars -> 6 tablet lines
+    per_page = int(page_text_budget() // paragraph_advance("PLAIN", long))
+    pages = paginate_text("\n".join([long] * (per_page + 1)))
+    assert len(pages) == 2
+    assert pages[0].count("\n") == per_page - 1 and pages[1] == long
+
+
+def test_compiled_styles_round_trip_through_the_decoder():
+    import io
+
+    from remarksync.mdcompile import markdown_to_paragraphs
+
+    md = (
+        "# Big heading\n"
+        "## Smaller heading\n"
+        "Body text that is plain.\n"
+        "- first bullet\n"
+        "  - nested bullet\n"
+        "1. first number\n"
+        "   1. nested number\n"
+        "- [ ] open box\n"
+        "- [x] ticked box\n"
+    )
+    paras = markdown_to_paragraphs(md)
+    assert [s for s, _ in paras] == [
+        "HEADING", "BOLD", "PLAIN", "BULLET", "BULLET2", "NUMBERED", "NUMBERED2", "CHECKBOX", "CHECKBOX_CHECKED",
+    ]
+    assert paras[0][1] == "Big heading" and paras[7][1] == "open box"  # markers stripped
+
+    blob = build_rmdoc("Styled", [paras])
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        raw = zf.read(next(n for n in zf.namelist() if n.endswith(".rm")))
+    decoded = decode_page(raw).texts[0]
+    assert decoded.paragraphs == paras
+    assert [ln.style for ln in decoded.lines] == [s for s, _ in paras]
 
 
 def _entries(blob):

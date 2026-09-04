@@ -72,12 +72,16 @@ past its edges.
 
 Things to sanity-check against your own tablet backup on first use:
 
-- **Typed text** is placed with numbers fitted against the tablet's own
-  PDF export of a typed page (line height 69.3 px, first line 60 px below
-  the block position, see `docs/adr/0001-page-coordinates-follow-the-tablet.md`).
-  Only the plain paragraph style was measured; heading, bullet and checkbox
-  heights are rmc's values, so a page mixing those styles with anchored ink
-  may drift slightly. The constants live in `textmetrics.py`.
+- **Typed text** is laid out with a model fitted against the tablet's own
+  PDF exports of two typed pages, one using every paragraph style (see
+  `docs/adr/0001-page-coordinates-follow-the-tablet.md` and
+  `textmetrics.py`): fonts, baselines, wrapping, indents, list markers and
+  checkboxes match the device to within a pixel, and ink anchored to text
+  lines lands where the device puts it. One open point: the tablet renders
+  the style code it uses for subheadings as either a 46 px serif subheading
+  or a 36 px medium-weight body line, and the file does not say which; we
+  draw the subheading. Fonts are stand-ins (Georgia, Segoe UI) for the
+  device's own.
 - **Base PDF pages** are drawn where the tablet draws them: at a fixed
   3.153 tablet pixels per PDF point, centred horizontally, top at the
   page top (physical size on the tablet's 157 mm screen; see
@@ -88,11 +92,14 @@ Things to sanity-check against your own tablet backup on first use:
 - **.rmdoc produced by `compile`** follows the software-3.x layout
   (`<uuid>.content` with formatVersion 2, `<uuid>.metadata`,
   `<uuid>/<page-uuid>.rm` with a SceneInfo block) and imports through the
-  desktop app as of 2026-09. Lines are never wrapped by the compiler: the
-  tablet wraps typed text itself, so hard-wrapped Markdown paragraphs are
-  joined first. Each page holds about one screen of text (22 plain lines),
-  estimated at 84 characters per wrapped line; a long paragraph is never
-  split across pages.
+  desktop app as of 2026-09. Markdown block markers become the tablet's
+  own paragraph styles: `#` a heading, `##` and deeper a subheading, `-`
+  a bullet (indented: nested), `1.` a numbered item (indented: nested),
+  `- [ ]` and `- [x]` checkboxes; the text arrives styled and editable.
+  Lines are never wrapped by the compiler: the tablet wraps typed text
+  itself, so hard-wrapped Markdown paragraphs are joined first. Each page
+  holds about one screen of text, charged per paragraph with the room the
+  tablet gives it; a long paragraph is never split across pages.
 - **Search covers** document names, typed text, and PDF-highlight text.
   Raw handwriting is not indexed yet — an OCR pass plugs in as a second
   *extractor* on the search index (see `search.py`) feeding the same
