@@ -55,6 +55,10 @@ def test_readme_export_rhythm():
     assert b[5] - b[4] == pytest.approx(69.3)
     assert b[6] - b[5] == pytest.approx(88.9)
     assert b[7] - b[6] == pytest.approx(63.7)
+    # measured on the export of the compiled README once ## became a subheading
+    sub = [ln.baseline for ln in lay_out_lines([("PLAIN", ""), ("SUBHEADING", "Install"), ("PLAIN", "")])]
+    assert sub[1] - sub[0] == pytest.approx(113.9)
+    assert sub[2] - sub[1] == pytest.approx(65.8)
 
 
 def test_first_baseline_and_body_pitch():
