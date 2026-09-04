@@ -64,6 +64,21 @@ def test_pressure_varying_widths_are_kept_per_point():
     assert not stroke.uniform
 
 
+def test_line_colour_comes_from_the_file_when_present():
+    from .conftest import line, page_rm
+
+    ln = line(si.PenColor.HIGHLIGHT, si.Pen.HIGHLIGHTER_2, [(0, 0), (10, 0)], point_width=30.0)
+    ln.color_rgba = (190, 234, 254, 255)  # the blue highlighter
+    shader = line(si.PenColor.HIGHLIGHT, si.Pen.SHADER, [(0, 20), (10, 20)], point_width=8.0)
+    shader.color_rgba = (33, 30, 28, 64)
+    marker = line(si.PenColor.RED, si.Pen.MARKER_2, [(0, 40), (10, 40)], point_width=6.0)
+    page = decode_page(page_rm(strokes=[ln, shader, marker]))
+    blue, grey, red = page.strokes
+    assert blue.color == "#beeafe" and blue.highlighter and blue.alpha == pytest.approx(110 / 255)
+    assert grey.color == "#211e1c" and grey.highlighter and grey.alpha == pytest.approx(64 / 255)
+    assert red.color == "#ea2027" and not red.highlighter and red.alpha == 1.0  # marker is opaque
+
+
 def test_points_without_widths_fall_back_to_the_pen_table():
     from .conftest import line, page_rm
 

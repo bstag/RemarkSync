@@ -95,6 +95,13 @@ Things to sanity-check against your own tablet backup on first use:
   Raw handwriting is not indexed yet — an OCR pass plugs in as a second
   *extractor* on the search index (see `search.py`) feeding the same
   FTS5 table.
+- **Pens** draw at the per-point width the tablet stored (pressure, tilt
+  and thickness already applied) and in the per-line colour software 3.x
+  writes (six highlighter tints, the shader's grey at 25%); this needs
+  `rmscene >= 0.8`. Checked against a test page with every pen: ballpoint,
+  fineliner, pencil, mechanical pencil, calligraphy, highlighter, marker,
+  shader and paintbrush all match in width and colour. Pencil texture
+  (the tablet's grainy look) is not modelled; pencil draws solid.
 - Fonts: text blocks render with Segoe UI. (On font-less/offscreen
   systems text shows as boxes — that's environmental, not a bug.)
 

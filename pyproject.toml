@@ -11,8 +11,7 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
     "PySide6>=6.6",
-    "rmscene>=0.6",
-    "rmc>=0.2",
+    "rmscene>=0.8",
     "pymupdf>=1.24",
 ]
 

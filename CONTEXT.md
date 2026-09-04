@@ -74,8 +74,9 @@ _Avoid_: background, paper style
 A dashed line on the canvas marking a paper edge that content has overflowed.
 
 **Stroke**:
-One pen line: a polyline in page coordinates with a colour, a width and
-whether it is a highlighter.
+One pen line: a polyline in page coordinates carrying the width the tablet
+computed at every point, its colour, and whether the pen is translucent
+(highlighter, shader) or opaque (everything else, the marker included).
 _Avoid_: line, path, ink segment
 
 **Ink**:

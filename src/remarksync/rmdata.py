@@ -77,8 +77,13 @@ PEN_WIDTHS: dict[str, float] = {
     "SHADER": 24.0,
 }
 
-HIGHLIGHTER_TOOLS = {"HIGHLIGHTER_1", "HIGHLIGHTER_2", "SHADER", "MARKER_1", "MARKER_2"}
+# Pens the tablet blends translucently over the page. The marker is an
+# opaque felt tip and is not one of them.
+TRANSLUCENT_TOOLS = {"HIGHLIGHTER_1", "HIGHLIGHTER_2", "SHADER"}
+HIGHLIGHTER_TOOLS = TRANSLUCENT_TOOLS  # older name
 ERASER_TOOLS = {"ERASER", "ERASER_AREA"}
+# Tint used for translucent pens whose file carries no alpha of its own.
+DEFAULT_TRANSLUCENT_ALPHA = 110 / 255
 
 V5_HEADER = b"reMarkable .lines file, version=5"
 V5_COLORS = {0: "BLACK", 1: "GRAY", 2: "WHITE"}
@@ -95,12 +100,13 @@ class Stroke:
     """
 
     points: list[tuple[float, float]]
-    color: str  # hex
+    color: str  # hex, the tablet's own RGB when the file carries one
     width: float  # tablet px, mean of ``widths``
-    highlighter: bool = False
+    highlighter: bool = False  # translucent pen: blended over the page
     layer_visible: bool = True
     widths: list[float] = field(default_factory=list)
     tool: str = ""
+    alpha: float = 1.0  # opacity for translucent pens (the file's, or the default tint)
 
     def __post_init__(self) -> None:
         if not self.widths:
@@ -255,17 +261,18 @@ def _decode_v6(tree) -> PageModel:
         tool = getattr(line.tool, "name", str(line.tool))
         if tool in ERASER_TOOLS:
             return
-        color = PEN_COLORS.get(getattr(line.color, "name", str(line.color)), "#1a1a1a")
+        color, alpha = _line_color(line, tool)
         widths = _point_widths(line, tool)
         page.strokes.append(
             Stroke(
                 points=[(p.x + x_shift + ax, p.y + ay) for p in line.points],
                 color=color,
                 width=sum(widths) / len(widths) if widths else 0.5,
-                highlighter=tool in HIGHLIGHTER_TOOLS,
+                highlighter=tool in TRANSLUCENT_TOOLS,
                 layer_visible=visible,
                 widths=widths,
                 tool=tool,
+                alpha=alpha,
             )
         )
 
@@ -289,6 +296,23 @@ def _decode_v6(tree) -> PageModel:
     if tree.root_text is not None:
         page.texts.append(text_block(tree.root_text, 0.0, 0.0))
     return page
+
+
+def _line_color(line: si.Line, tool: str) -> tuple[str, float]:
+    """(hex colour, alpha) for a line. Software 3.x writes an RGBA per line
+    (six highlighter colours, the shader's grey at 25%); older files only
+    have the palette id, mapped through PEN_COLORS."""
+    rgba = getattr(line, "color_rgba", None)
+    translucent = tool in TRANSLUCENT_TOOLS
+    if rgba:
+        r, g, b, a = rgba
+        hex_color = f"#{r:02x}{g:02x}{b:02x}"
+        # highlighters are stored fully opaque and tinted by the tablet at
+        # draw time; only a real partial alpha (the shader) is kept
+        alpha = a / 255 if (translucent and a < 255) else (DEFAULT_TRANSLUCENT_ALPHA if translucent else 1.0)
+        return hex_color, alpha
+    name = getattr(line.color, "name", str(line.color))
+    return PEN_COLORS.get(name, "#1a1a1a"), (DEFAULT_TRANSLUCENT_ALPHA if translucent else 1.0)
 
 
 def _point_widths(line: si.Line, tool: str) -> list[float]:
