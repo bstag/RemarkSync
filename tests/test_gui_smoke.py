@@ -194,7 +194,7 @@ def test_read_handwriting_toggle_wires_the_engine_into_indexing(qapp, backup_roo
         time.sleep(0.01)
     qapp.processEvents()
     assert win._library.handwriting == rec.ENGINE_TROCR
-    assert "handwriting: 1 pages read with trocr-large-handwritten, 1 cached" in win.statusBar().currentMessage()
+    assert "handwriting: 3 pages read with trocr-large-handwritten, 3 cached" in win.statusBar().currentMessage()
     win.search_box.setText("zebra")
     win.run_search()
     assert win.results_list.count() >= 1
