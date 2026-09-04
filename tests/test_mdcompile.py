@@ -22,17 +22,50 @@ def test_pagination_respects_page_size():
     assert all(p.count("\n") < 40 for p in pages)
 
 
-def test_build_rmdoc_structure():
-    blob = build_rmdoc("My Doc", ["page one text", "page two text"])
-    with zipfile.ZipFile(__import__("io").BytesIO(blob)) as zf:
-        names = set(zf.namelist())
-        assert {".metadata", ".content", "pagedata", "0/0.rm", "1/1.rm"} <= names
-        import json
+def _entries(blob):
+    import io
+    import json
 
-        content = json.loads(zf.read(".content"))
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        names = zf.namelist()
+        content_name = next(n for n in names if n.endswith(".content"))
+        doc_uuid = content_name[: -len(".content")]
+        return doc_uuid, names, json.loads(zf.read(content_name)), json.loads(zf.read(f"{doc_uuid}.metadata")), zf
+
+
+def test_build_rmdoc_follows_the_software_3_layout():
+    import io
+    import json
+
+    blob = build_rmdoc("My Doc", ["page one text", "page two text"])
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        names = zf.namelist()
+        content_name = next(n for n in names if n.endswith(".content"))
+        doc_uuid = content_name[: -len(".content")]
+        content = json.loads(zf.read(content_name))
+        meta = json.loads(zf.read(f"{doc_uuid}.metadata"))
+        assert content["formatVersion"] == 2
         assert content["fileType"] == "notebook"
-        meta = json.loads(zf.read(".metadata"))
-        assert meta["visibleName"] == "My Doc"
+        assert content["pageCount"] == 2
+        page_ids = [p["id"] for p in content["cPages"]["pages"]]
+        assert len(page_ids) == 2 and all(len(pid) == 36 for pid in page_ids)
+        keys = [p["idx"]["value"] for p in content["cPages"]["pages"]]
+        assert keys == sorted(keys)  # page order is a lexicographic key
+        assert set(names) == {content_name, f"{doc_uuid}.metadata", *(f"{doc_uuid}/{pid}.rm" for pid in page_ids)}
+        assert meta["visibleName"] == "My Doc" and meta["type"] == "DocumentType"
+
+
+def test_compiled_page_carries_scene_info():
+    import io
+
+    from rmscene import SceneInfo, read_blocks
+
+    blob = build_rmdoc("T", ["one line"])
+    with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+        raw = zf.read(next(n for n in zf.namelist() if n.endswith(".rm")))
+    infos = [b for b in read_blocks(io.BytesIO(raw)) if isinstance(b, SceneInfo)]
+    assert len(infos) == 1
+    assert infos[0].paper_size == (1404, 1872)
 
 
 def test_compiled_pages_roundtrip():
@@ -41,7 +74,7 @@ def test_compiled_pages_roundtrip():
 
     blob = build_rmdoc("T", ["round trip works"])
     with zipfile.ZipFile(io.BytesIO(blob)) as zf:
-        raw = zf.read("0/0.rm")
+        raw = zf.read(next(n for n in zf.namelist() if n.endswith(".rm")))
         page = decode_page(raw)
         # the compiled text box lands near the top of the page, within margins
         placed = lay_out(page).page
