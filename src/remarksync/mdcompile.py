@@ -7,6 +7,8 @@ fully editable on-device.
 
 Light markdown handling only — headings/bullets/links are flattened to
 text; this mirrors what rmc extracts, so md → rmdoc → md round-trips.
+Lines are never wrapped: the tablet wraps typed text itself, and pages
+hold about one screen of text (see :mod:`textmetrics`).
 
 The archive follows the software-3.x layout the desktop app expects
 (``<uuid>.content`` with formatVersion 2 and UUID page ids, ``<uuid>.metadata``,
@@ -30,59 +32,75 @@ from .rmdata import PAGE_HEIGHT, PAGE_WIDTH
 
 # Text-box placement and page fill come from the shared text metrics, so the
 # compiler, the page decoder and the painter agree on where text sits.
-from .textmetrics import CHARS_PER_LINE, TEXT_POS_X, TEXT_POS_Y, TEXT_WIDTH, lines_per_page
+from .textmetrics import TEXT_POS_X, TEXT_POS_Y, TEXT_WIDTH, estimated_lines, lines_per_page
 
 _LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
 _IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 _EMPH_RE = re.compile(r"(\*\*|__|\*|_|`)")
+# lines that start a paragraph of their own and are never joined to the
+# previous line: headings, list items, block quotes, tables, indented code
+_BLOCK_START_RE = re.compile(r"^(\s*([-*+]|\d+[.)])\s+|#{1,6}\s|>|\||\s{4,}|\t)")
 
 
 def markdown_to_text(md: str) -> str:
     """Flatten markdown to plain text, keeping heading/bullet markers that
-    rmc-style extraction would re-produce (so content round-trips)."""
+    rmc-style extraction would re-produce (so content round-trips).
+
+    Markdown sources are usually hard-wrapped; a single newline inside a
+    paragraph is a soft break, so those lines are joined into one
+    paragraph and the tablet wraps it. Blank lines, headings, list items,
+    quotes, tables and code keep their own lines.
+    """
     lines_out: list[str] = []
     in_code = False
-    for line in md.splitlines():
-        if line.strip().startswith("```"):
+    joinable = False  # the previous output line is prose that may continue
+    for raw in md.splitlines():
+        if raw.strip().startswith("```"):
             in_code = not in_code
-            lines_out.append("    ─────" if in_code else "    ─────")
+            lines_out.append("    ─────")
+            joinable = False
             continue
         if in_code:
-            lines_out.append("    " + line)
+            lines_out.append("    " + raw)
+            joinable = False
             continue
-        line = _IMAGE_RE.sub(r"[image: \1]", line)
+        line = _IMAGE_RE.sub(r"[image: \1]", raw)
         line = _LINK_RE.sub(r"\1 (\2)", line)
         line = _EMPH_RE.sub("", line)
-        lines_out.append(line)
+        if not line.strip():
+            lines_out.append("")
+            joinable = False
+            continue
+        block_start = bool(_BLOCK_START_RE.match(raw))
+        if joinable and not block_start and not raw.rstrip().endswith("  "):
+            lines_out[-1] = lines_out[-1].rstrip() + " " + line.strip()
+        else:
+            lines_out.append(line)
+        # a heading, list item or quote line may itself be continued only by
+        # an indented continuation, which the regex treats as a block start
+        joinable = not block_start
     return "\n".join(lines_out)
 
 
-def _wrap_line(line: str, width: int = CHARS_PER_LINE) -> list[str]:
-    if len(line) <= width:
-        return [line]
-    out: list[str] = []
-    while len(line) > width:
-        cut = line.rfind(" ", 0, width)
-        if cut <= 0:
-            cut = width
-        out.append(line[:cut])
-        line = line[cut:].lstrip()
-    if line:
-        out.append(line)
-    return out
-
-
 def paginate_text(text: str) -> list[str]:
-    """Split wrapped text into page-sized chunks on line boundaries."""
-    wrapped: list[str] = []
-    for line in text.splitlines():
-        wrapped.extend(_wrap_line(line))
+    """Split text into pages of about one screen each, breaking only between
+    paragraphs. Lines are never wrapped here: the tablet wraps typed text
+    itself inside the text box, and a hard wrap would show as short lines
+    on the device. Each paragraph is charged the number of lines the tablet
+    will wrap it onto."""
+    budget = lines_per_page()
     pages: list[str] = []
-    per_page = lines_per_page()
-    for start in range(0, max(1, len(wrapped)), per_page):
-        chunk = wrapped[start : start + per_page]
-        if chunk:
-            pages.append("\n".join(chunk))
+    current: list[str] = []
+    used = 0
+    for paragraph in text.splitlines():
+        cost = estimated_lines(paragraph)
+        if current and used + cost > budget:
+            pages.append("\n".join(current))
+            current, used = [], 0
+        current.append(paragraph)
+        used += cost
+    if current:
+        pages.append("\n".join(current))
     return pages or [""]
 
 

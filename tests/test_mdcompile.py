@@ -15,11 +15,41 @@ def test_markdown_flattening():
     assert "site (https://x.y)" in text
 
 
-def test_pagination_respects_page_size():
+def test_hard_wrapped_paragraphs_are_joined_for_the_tablet_to_wrap():
+    md = (
+        "# Title\n"
+        "\n"
+        "First line of a paragraph\n"
+        "continues on the next source line\n"
+        "and ends here.\n"
+        "\n"
+        "- item one\n"
+        "- item two\n"
+        "\n"
+        "Second paragraph.\n"
+    )
+    text = markdown_to_text(md).splitlines()
+    assert text[0] == "# Title"
+    assert text[2] == "First line of a paragraph continues on the next source line and ends here."
+    assert text[4:6] == ["- item one", "- item two"]
+    assert text[7] == "Second paragraph."
+
+
+def test_pagination_fills_one_screen_per_page_without_wrapping():
+    from remarksync.textmetrics import lines_per_page
+
     text = "\n".join(f"line {i}" for i in range(200))
     pages = paginate_text(text)
-    assert len(pages) > 1
-    assert all(p.count("\n") < 40 for p in pages)
+    assert lines_per_page() == 22
+    assert len(pages) == 10  # 200 short paragraphs, 22 per page
+    assert all(p.count("\n") < 22 for p in pages)
+
+    # a long paragraph is never broken, but it costs the lines it will wrap onto
+    long = "word " * 100  # ~500 chars -> 6 tablet lines
+    pages = paginate_text("\n".join([long] * 5))
+    assert all(long.strip() in p or long in p for p in pages)
+    assert len(pages) == 2  # 5 x 6 = 30 lines over a 22-line budget
+    assert all(p.count("\n") <= 2 for p in pages)
 
 
 def _entries(blob):
@@ -84,7 +114,7 @@ def test_compiled_pages_roundtrip():
 
 
 def test_markdown_to_rmdoc_end_to_end(tmp_path):
-    md = "# Notes\n\n" + ("filler line for pagination\n" * 100)
+    md = "# Notes\n\n" + ("filler line for pagination\n\n" * 100)  # 100 separate paragraphs
     out = markdown_to_rmdoc(md, "Big Doc", tmp_path / "big.rmdoc")
     assert out.exists()
     from remarksync.backup import open_rmdoc

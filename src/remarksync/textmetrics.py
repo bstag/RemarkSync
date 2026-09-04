@@ -68,17 +68,25 @@ TEXT_POS_X = -576.0
 TEXT_POS_Y = 234.0
 TEXT_WIDTH = 1152.0
 
-# Conservative page fill: the tablet wraps text inside the 936-unit-wide text
-# box; the compiler breaks lines itself so pages stay predictable.
-CHARS_PER_LINE = 62
-LINES_PER_PAGE = 40
+# The tablet wraps typed text itself, so the compiler never breaks lines.
+# It only needs an estimate of how many lines a paragraph will take to
+# decide where pages end: the device font averages 13.6 px per character
+# (measured on the tablet's PDF export of a typed page), so a 1152 px box
+# holds about 84.
+CHARS_PER_LINE = 84
+# Space below the last line before a page break.
+PAGE_BOTTOM_MARGIN = 24.0
 
 
 def lines_per_page() -> int:
-    """How many wrapped lines the compiler puts on one page.
+    """How many plain lines fit on one screen below the text box's first
+    line: (1872 - 234 - 60 - 24) / 69.3, which is 22. A compiled page is
+    one screen's worth."""
+    from .rmdata import PAGE_HEIGHT  # local import: rmdata imports this module
 
-    A fixed count today. The alternative is a height budget using
-    :func:`paragraphs_height`, which would let headings cost more than
-    bullets; switch here once compiled pages have been checked on-device.
-    """
-    return LINES_PER_PAGE
+    return int((PAGE_HEIGHT - TEXT_POS_Y - TEXT_TOP_Y - PAGE_BOTTOM_MARGIN) // DEFAULT_LINE_HEIGHT)
+
+
+def estimated_lines(paragraph: str) -> int:
+    """Lines the tablet will wrap a paragraph onto, for page-fill purposes."""
+    return max(1, -(-len(paragraph) // CHARS_PER_LINE))

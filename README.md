@@ -85,12 +85,14 @@ Things to sanity-check against your own tablet backup on first use:
   fitted from the tablet's own snap-highlight rectangles on three PDFs to
   about a pixel. US Letter pages therefore come out wider than the
   screen, and the canvas grows to show them whole.
-- **.rmdoc produced by `compile`** is minimal (`.metadata`, `.content`,
-  `pagedata`, `0/0.rm`, `0/metadata.json`). If a tablet firmware rejects
-  it, compare with a real device-exported `.rmdoc` and extend
-  `mdcompile.build_rmdoc`. Pages are filled by a fixed line count; a
-  height budget that lets headings cost more is a one-line switch in
-  `textmetrics.lines_per_page`.
+- **.rmdoc produced by `compile`** follows the software-3.x layout
+  (`<uuid>.content` with formatVersion 2, `<uuid>.metadata`,
+  `<uuid>/<page-uuid>.rm` with a SceneInfo block) and imports through the
+  desktop app as of 2026-09. Lines are never wrapped by the compiler: the
+  tablet wraps typed text itself, so hard-wrapped Markdown paragraphs are
+  joined first. Each page holds about one screen of text (22 plain lines),
+  estimated at 84 characters per wrapped line; a long paragraph is never
+  split across pages.
 - **Search covers** document names, typed text, and PDF-highlight text.
   Raw handwriting is not indexed yet — an OCR pass plugs in as a second
   *extractor* on the search index (see `search.py`) feeding the same
