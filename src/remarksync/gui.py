@@ -425,8 +425,13 @@ class MainWindow(QMainWindow):
         worker.failed.connect(thread.quit)
         self._index_thread, self._index_worker = thread, worker
         self.index_action.setText("Cancel Indexing")
-        self.statusBar().showMessage("Indexing…")
+        self._recognitions_before = len(self._library.recognition)
+        self.statusBar().showMessage(f"Indexing{self._handwriting_note()}…")
         thread.start()
+
+    def _handwriting_note(self) -> str:
+        engine = self._library.handwriting if self._library else None
+        return f" (reading handwriting with {engine})" if engine else ""
 
     def _stop_indexing(self) -> None:
         """Cancel a running index and wait for its thread to finish."""
@@ -440,15 +445,17 @@ class MainWindow(QMainWindow):
 
     def _on_index_progress(self, name: str, done: int) -> None:
         total = len(self._library) if self._library else 0
-        self.statusBar().showMessage(f"Indexing {done}/{total}: {name}")
+        self.statusBar().showMessage(f"Indexing {done}/{total}{self._handwriting_note()}: {name}")
 
     def _on_index_finished(self, report: IndexReport) -> None:
         self.index_action.setText("Update Search Index")
         state = "Index updated" if report.completed else "Indexing cancelled"
-        self.statusBar().showMessage(
-            f"{state}: {report.indexed} documents indexed ({report.pages} pages), "
-            f"{report.skipped} unchanged, {report.removed} removed"
-        )
+        message = (f"{state}: {report.indexed} documents indexed ({report.pages} pages), "
+                   f"{report.skipped} unchanged, {report.removed} removed")
+        if self._library is not None and self._library.handwriting:
+            read = len(self._library.recognition) - self._recognitions_before
+            message += f"; handwriting: {read} pages read with {self._library.handwriting}, {len(self._library.recognition)} cached"
+        self.statusBar().showMessage(message)
 
     def _on_index_failed(self, message: str) -> None:
         self.index_action.setText("Update Search Index")
