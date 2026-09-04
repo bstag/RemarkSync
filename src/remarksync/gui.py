@@ -35,9 +35,61 @@ from . import APP_NAME, __version__
 from .backup import DocItem, open_rmdoc
 from .library import IndexReport, Library, NoIndexError
 from .mdcompile import markdown_to_rmdoc
-from .viewer import PageCanvas, PdfUnderlay
+from .viewer import PageCanvas, PdfUnderlay, decode_frame
 
 log = logging.getLogger(__name__)
+
+
+class DecodeWorker(QObject):
+    """Decodes and lays out a document's pages on a worker thread, starting
+    at the page the user asked for, then forward, then the rest. Each frame
+    comes back as a signal; the window hands it to that page's canvas.
+
+    Decoding is pure Python (rmscene) and needs no Qt; the only shared
+    resource is the base PDF, which PyMuPDF must not use from two threads,
+    so the worker opens its own handle just to read page sizes.
+    """
+
+    decoded = Signal(int, object)  # page index, PageFrame
+    finished = Signal()
+
+    def __init__(self, doc: DocItem, start: int = 0):
+        super().__init__()
+        self._doc = doc
+        self._start = max(0, min(start, max(0, len(doc.pages) - 1)))
+        self._cancel = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel.set()
+
+    def run(self) -> None:
+        pages = self._doc.pages
+        order = list(range(self._start, len(pages))) + list(range(self._start - 1, -1, -1))
+        base = None
+        base_pdf = self._doc.resolve_base_pdf()
+        try:
+            if base_pdf:
+                import fitz
+
+                base = fitz.open(base_pdf)
+            for index in order:
+                if self._cancel.is_set():
+                    break
+                page = pages[index]
+                size = None
+                if base is not None and index < base.page_count:
+                    rect = base.load_page(index).rect
+                    size = (float(rect.width), float(rect.height))
+                try:
+                    frame = decode_frame(page, size)
+                except Exception:  # a bad page must not stop the document
+                    log.exception("decoding page %d failed", index)
+                    continue
+                self.decoded.emit(index, frame)
+        finally:
+            if base is not None:
+                base.close()
+            self.finished.emit()
 
 
 class IndexWorker(QObject):
@@ -87,6 +139,9 @@ class MainWindow(QMainWindow):
         self._library: Library | None = None
         self._index_thread: QThread | None = None
         self._index_worker: IndexWorker | None = None
+        self._decode_thread: QThread | None = None
+        self._decode_worker: DecodeWorker | None = None
+        self._pending_frames: dict[int, object] = {}
         self._canvases: list[PageCanvas] = []
         self._underlay: PdfUnderlay | None = None
         self._scale = 0.62
@@ -220,12 +275,16 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------- pages
 
     def show_doc(self, doc: DocItem, page_no: int | None = None) -> None:
+        """Open a document: placeholder canvases appear at once, a worker
+        decodes the pages (the requested page first) and fills them in."""
+        self._stop_decoding()
         if hasattr(self, "_fill_timer"):
             self._fill_timer.stop()
         for canvas in self._canvases:
             self._pages_layout.removeWidget(canvas)
             canvas.deleteLater()
         self._canvases = []
+        self._pending_frames = {}
         self._doc_token = getattr(self, "_doc_token", 0) + 1
 
         if self._underlay:
@@ -236,24 +295,27 @@ class MainWindow(QMainWindow):
             self._underlay = PdfUnderlay(base_pdf)
 
         self._active_doc = doc
-        # render the first screen synchronously; large docs (1000+ page
-        # PDFs) stream the rest in batches so the UI never blocks
+        self._target_page = page_no
+        # placeholders are cheap; still add the long tail in batches so a
+        # 1,000-page document does not lay out every widget in one go
         first = max(40, (page_no or 0) + 2)
         self._add_canvases(doc, min(first, len(doc.pages)))
         if len(doc.pages) > first:
             self._fill_timer = QTimer(self)
             self._fill_timer.timeout.connect(lambda: self._fill_batch(doc, self._doc_token))
             self._fill_timer.start(50)
+        self._start_decoding(doc, page_no or 0)
 
         self.statusBar().showMessage(f"{doc.name} — {len(doc.pages)} pages [{doc.file_type}]")
         if page_no is not None and 0 <= page_no < len(self._canvases):
-            target = self._canvases[page_no]
-            self.page_area.ensureWidgetVisible(target, 0, 40)
+            self.page_area.ensureWidgetVisible(self._canvases[page_no], 0, 40)
 
     def _add_canvases(self, doc: DocItem, upto: int) -> None:
         while len(self._canvases) < min(upto, len(doc.pages)):
-            page = doc.pages[len(self._canvases)]
-            canvas = PageCanvas(doc, page, self._underlay, self._scale)
+            index = len(self._canvases)
+            page = doc.pages[index]
+            frame = self._pending_frames.pop(index, None)
+            canvas = PageCanvas(doc, page, self._underlay, self._scale, frame=frame)
             self._canvases.append(canvas)
             self._pages_layout.insertWidget(self._pages_layout.count() - 1, canvas, 0, Qt.AlignHCenter)
 
@@ -263,6 +325,48 @@ class MainWindow(QMainWindow):
         self._add_canvases(doc, len(self._canvases) + 150)
         if len(self._canvases) >= len(doc.pages):
             self._fill_timer.stop()
+
+    # -- background decoding ------------------------------------------------
+
+    @property
+    def is_decoding(self) -> bool:
+        return self._decode_thread is not None and self._decode_thread.isRunning()
+
+    def pages_pending(self) -> int:
+        """Canvases still showing a placeholder."""
+        return sum(1 for c in self._canvases if not c.decoded)
+
+    def _start_decoding(self, doc: DocItem, start: int) -> None:
+        worker = DecodeWorker(doc, start)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        token = self._doc_token
+        thread.started.connect(worker.run)
+        worker.decoded.connect(lambda index, frame, t=token: self._on_page_decoded(t, index, frame))
+        worker.finished.connect(thread.quit)
+        self._decode_thread, self._decode_worker = thread, worker
+        thread.start()
+
+    def _stop_decoding(self) -> None:
+        if self._decode_thread is None:
+            return
+        if self._decode_worker is not None:
+            self._decode_worker.cancel()
+        self._decode_thread.quit()
+        self._decode_thread.wait(30_000)
+        self._decode_thread, self._decode_worker = None, None
+
+    def _on_page_decoded(self, token: int, index: int, frame) -> None:
+        if token != self._doc_token:
+            return  # a frame from a document that has since been closed
+        if index < len(self._canvases):
+            self._canvases[index].set_frame(frame)
+            if index == getattr(self, "_target_page", None):
+                # sizes above the target may have changed; land on it again
+                self.page_area.ensureWidgetVisible(self._canvases[index], 0, 40)
+                self._target_page = None
+        else:
+            self._pending_frames[index] = frame
 
     def zoom(self, delta: float) -> None:
         self._scale = min(2.5, max(0.25, self._scale + delta))
@@ -392,6 +496,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._stop_indexing()
+        self._stop_decoding()
         super().closeEvent(event)
 
 

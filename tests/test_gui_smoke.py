@@ -42,12 +42,53 @@ def test_main_window_opens_library(qapp, backup_root, tmp_path, monkeypatch):
     assert doc is not None
     win.show_doc(doc)
     assert len(win._canvases) == len(doc.pages)
+    _wait_for_pages(qapp, win)
+    assert win.pages_pending() == 0
+    assert all(c.decoded for c in win._canvases)
 
     # force a render pass of the first page to catch painting errors
     from PySide6.QtGui import QPixmap
 
     pixmap = win._canvases[0].grab()
     assert not pixmap.isNull()
+    win.close()
+
+
+def _wait_for_pages(qapp, win, seconds=20):
+    import time
+
+    deadline = time.monotonic() + seconds
+    while (win.is_decoding or win.pages_pending()) and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    qapp.processEvents()
+
+
+def test_pages_decode_on_a_worker_and_fill_placeholders(qapp, backup_root, monkeypatch):
+    from remarksync.backup import DocItem
+    from remarksync.gui import MainWindow
+
+    monkeypatch.setattr(MainWindow, "_restore_state", lambda self: None)
+    win = MainWindow()
+    win.open_folder(backup_root)
+    doc = next(d for d in win._library.documents if d.name == "Ink Notes")
+    win.show_doc(doc, page_no=1)
+    # placeholders exist immediately, sized like a page
+    assert len(win._canvases) == 2
+    assert win._canvases[0].width() > 0
+    _wait_for_pages(qapp, win)
+    assert win.pages_pending() == 0
+    assert win._canvases[0].frame().page.strokes  # the real ink arrived
+    # the ink page has content; its frame is not the placeholder's empty page
+    assert not win.is_decoding
+
+    # switching documents while decoding cancels cleanly and reuses nothing
+    pdf_doc = next(d for d in win._library.documents if d.name == "Paper PDF")
+    win.show_doc(pdf_doc)
+    win.show_doc(doc)
+    _wait_for_pages(qapp, win)
+    assert all(c.decoded for c in win._canvases)
+    assert all(c.page_index == i for i, c in enumerate(win._canvases))
     win.close()
 
 

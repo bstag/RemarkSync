@@ -250,24 +250,41 @@ class _PixmapCache:
 _painted_pages = _PixmapCache()
 
 
-def frame_for(doc: DocItem, page: PageRef, underlay: PdfUnderlay | None) -> PageFrame:
-    """Decode and lay out one page of a document."""
+def decode_frame(page: PageRef, base_size: tuple[float, float] | None) -> PageFrame:
+    """Decode and lay out one page: no Qt, safe to call on a worker thread."""
     model = decode_page(page.rm_path) if page.rm_path else PageModel()
-    base_size = underlay.page_size(page.index) if underlay is not None else None
     return lay_out(model, template=page.template, page_index=page.index, base_size=base_size)
 
 
-class PageCanvas(QWidget):
-    """One reMarkable page. Fixed size = frame canvas size * scale."""
+def frame_for(doc: DocItem, page: PageRef, underlay: PdfUnderlay | None) -> PageFrame:
+    """Decode and lay out one page of a document."""
+    base_size = underlay.page_size(page.index) if underlay is not None else None
+    return decode_frame(page, base_size)
 
-    def __init__(self, doc: DocItem, page: PageRef, underlay: PdfUnderlay | None, scale: float = 1.0):
+
+def placeholder_frame(page: PageRef, base_size: tuple[float, float] | None) -> PageFrame:
+    """The frame of an empty page: paper size, template or underlay, no
+    content. What a canvas shows until its page has been decoded."""
+    return lay_out(PageModel(), template=page.template, page_index=page.index, base_size=base_size)
+
+
+class PageCanvas(QWidget):
+    """One reMarkable page. Fixed size = frame canvas size * scale.
+
+    Built with a placeholder frame (an empty page of the right paper size)
+    so a document opens at once; ``set_frame`` swaps the decoded page in
+    when a worker delivers it, or pass ``frame`` to build it decoded.
+    """
+
+    def __init__(self, doc: DocItem, page: PageRef, underlay: PdfUnderlay | None, scale: float = 1.0,
+                 frame: PageFrame | None = None):
         super().__init__()
         self._doc = doc
         self._page = page
         self._underlay = underlay
-        # lay out eagerly so the fixed size is correct before the first paint
-        # (resizing during/after paint is unreliable in Qt)
-        self._frame = frame_for(doc, page, underlay)
+        self._decoded = frame is not None
+        base_size = underlay.page_size(page.index) if underlay is not None else None
+        self._frame = frame if frame is not None else placeholder_frame(page, base_size)
         self._scale = scale
         self.set_scale(scale)
         self.setToolTip(f"{doc.name} — page {page.index + 1}")
@@ -275,12 +292,28 @@ class PageCanvas(QWidget):
     def frame(self) -> PageFrame:
         return self._frame
 
+    @property
+    def decoded(self) -> bool:
+        """False while the canvas still shows the placeholder."""
+        return self._decoded
+
+    @property
+    def page_index(self) -> int:
+        return self._page.index
+
+    def set_frame(self, frame: PageFrame) -> None:
+        """Swap in the decoded page (sizes the widget, drops the cached paint)."""
+        self._frame = frame
+        self._decoded = True
+        _painted_pages.drop(id(self))
+        self.set_scale(self._scale)
+
     def model(self) -> PageModel:
         return self._frame.page
 
     def set_scale(self, scale: float) -> None:
         self._scale = scale
-        self.setFixedSize(int(self._frame.width * scale), int(self._frame.height * scale))
+        self.setFixedSize(max(1, int(self._frame.width * scale)), max(1, int(self._frame.height * scale)))
         self.update()
 
     def deleteLater(self) -> None:  # noqa: N802
