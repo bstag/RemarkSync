@@ -29,8 +29,11 @@ from pathlib import Path
 from rmscene import CrdtId, LwwValue, PageInfoBlock, RootTextBlock, SceneInfo, simple_text_document, write_blocks
 from rmscene import scene_items as si
 
+from . import rmformat
 from .rmdata import PAGE_HEIGHT, PAGE_WIDTH
 from .textmetrics import STYLE_CODES
+
+rmformat.install()  # write the paragraph-format fields the tablet expects for subheadings
 
 STYLE_CODE_BY_NAME = {name: code for code, name in STYLE_CODES.items()}
 
@@ -58,8 +61,8 @@ def _inline(text: str) -> str:
 
 def markdown_to_paragraphs(md: str) -> list[tuple[str, str]]:
     """Markdown as (style, text) paragraphs the way the tablet types them:
-    ``#`` headings become HEADING, deeper headings the tablet's subheading
-    (BOLD), ``-`` items BULLET (nested: BULLET2), ``1.`` items NUMBERED
+    ``#`` becomes HEADING, ``##`` SUBHEADING, deeper headings BOLD, ``-``
+    items BULLET (nested: BULLET2), ``1.`` items NUMBERED
     (nested: NUMBERED2), ``- [ ]`` and ``- [x]`` the checkbox styles, code
     is kept indented, and everything else is PLAIN.
 
@@ -86,7 +89,8 @@ def markdown_to_paragraphs(md: str) -> list[tuple[str, str]]:
             continue
         m = _HEADING_RE.match(raw)
         if m:
-            paras.append(("HEADING" if len(m.group(1)) == 1 else "BOLD", _inline(m.group(2)).strip()))
+            level = len(m.group(1))
+            paras.append(("HEADING" if level == 1 else "SUBHEADING" if level == 2 else "BOLD", _inline(m.group(2)).strip()))
             joinable = False
             continue
         m = _CHECKBOX_RE.match(raw)
@@ -185,7 +189,7 @@ def page_rm_bytes(paragraphs, author_uuid) -> bytes:
                 key = CrdtId(0, 0) if k == 0 else CrdtId(1, first_char + offset - 1)
                 code = STYLE_CODE_BY_NAME.get(style, 1)
                 if code != 1 or k == 0:
-                    styles[key] = LwwValue(timestamp=CrdtId(1, stamp), value=si.ParagraphStyle(code))
+                    styles[key] = LwwValue(timestamp=CrdtId(1, stamp), value=si.ParagraphStyle(code))  # unknown codes survive via the _missing_ shim
                     stamp += 1
                 offset += len(t) + 1
             block.value.styles = styles

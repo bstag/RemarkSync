@@ -26,7 +26,10 @@ from rmscene import CrdtId, read_tree
 from rmscene import scene_items as si
 from rmscene.text import TextDocument
 
+from . import rmformat
 from .textmetrics import TextLine, block_height, lay_out_lines, style_name
+
+rmformat.install()  # read the paragraph-format fields rmscene skips (subheading vs bold)
 
 
 def _unknown_paragraph_style(cls, value):

@@ -56,9 +56,8 @@ STYLES: dict[str, Style] = {
     # style code 3: a medium-weight body line (what our own compiled ## lines
     # rendered as on the device)
     "BOLD": Style("BOLD", 35.8, False, 500, 0, None),
-    # the 46 px serif subheading seen on the styles page; its code is not
-    # known yet (the file showed code 3 for it too), so the decoder never
-    # produces it and the compiler does not emit it
+    # the toolbar's Subheading: style code 3 with a variant field (see
+    # rmformat), reported under a code of our own
     "SUBHEADING": Style("SUBHEADING", 45.8, True, 400, 0, None),
     "PLAIN": Style("PLAIN", 31.9, False, 400, 0, None),
     "BASIC": Style("BASIC", 31.9, False, 400, 0, None),
@@ -84,6 +83,7 @@ STYLE_CODES: dict[int, str] = {
     8: "CHECKBOX2",
     10: "NUMBERED",
     11: "NUMBERED2",
+    103: "SUBHEADING",  # rmformat.SUBHEADING_CODE
 }
 MARKER_GAP = 28.0  # marker glyph this far left of the text
 CHECKBOX_SIZE = 26.0

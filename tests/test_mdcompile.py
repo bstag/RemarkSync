@@ -62,6 +62,7 @@ def test_compiled_styles_round_trip_through_the_decoder():
     md = (
         "# Big heading\n"
         "## Smaller heading\n"
+        "### Bold line\n"
         "Body text that is plain.\n"
         "- first bullet\n"
         "  - nested bullet\n"
@@ -72,9 +73,9 @@ def test_compiled_styles_round_trip_through_the_decoder():
     )
     paras = markdown_to_paragraphs(md)
     assert [s for s, _ in paras] == [
-        "HEADING", "BOLD", "PLAIN", "BULLET", "BULLET2", "NUMBERED", "NUMBERED2", "CHECKBOX", "CHECKBOX_CHECKED",
+        "HEADING", "SUBHEADING", "BOLD", "PLAIN", "BULLET", "BULLET2", "NUMBERED", "NUMBERED2", "CHECKBOX", "CHECKBOX_CHECKED",
     ]
-    assert paras[0][1] == "Big heading" and paras[7][1] == "open box"  # markers stripped
+    assert paras[0][1] == "Big heading" and paras[8][1] == "open box"  # markers stripped
 
     blob = build_rmdoc("Styled", [paras])
     with zipfile.ZipFile(io.BytesIO(blob)) as zf:
@@ -156,3 +157,30 @@ def test_markdown_to_rmdoc_end_to_end(tmp_path):
     assert len(doc.pages) >= 3
     first = decode_page(doc.pages[0].rm_path)
     assert "Notes" in page_text(first)
+
+
+def test_subheading_format_entry_matches_the_device_bytes():
+    """The tablet stores Subheading as style 3 plus two extra fields; Bold
+    is the bare code. rmscene skips the fields, so RemarkSync reads and
+    writes them itself (rmformat)."""
+    import io
+    import struct
+
+    from remarksync.mdcompile import page_rm_bytes
+
+    raw = page_rm_bytes([("SUBHEADING", "sub"), ("BOLD", "bold")], None)
+    # walk the blocks to the root text block (type 7) and pull its format sub-blocks
+    pos = 43
+    entries = []
+    while pos < len(raw):
+        length, = struct.unpack_from("<I", raw, pos)
+        if raw[pos + 7] == 0x07:
+            body = raw[pos + 8: pos + 8 + length]
+            sub = bytes([0x11, 0x03, 0x21, 0x02, 0x34, 0x03, 0x00, 0x00, 0x00])  # what the device wrote for a subheading
+            assert sub in body
+            assert body.count(bytes([0x11, 0x03])) == 2  # the bold entry has the bare code
+            entries.append(body)
+        pos += 8 + length
+    assert entries
+    decoded = decode_page(raw).texts[0]
+    assert [s for s, _ in decoded.paragraphs] == ["SUBHEADING", "BOLD"]
