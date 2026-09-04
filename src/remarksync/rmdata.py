@@ -44,7 +44,7 @@ PEN_COLORS: dict[str, str] = {
     "GREEN": "#00a651",
     "PINK": "#e91e63",
     "BLUE": "#0072ce",
-    "RED": "#ea2027",
+    "RED": "#c23132",  # as the tablet's own PDF export renders it
     "GRAY_OVERLAP": "#808080",
     "HIGHLIGHT": "#ffd400",
     "GREEN_2": "#2ecc71",
@@ -84,6 +84,23 @@ HIGHLIGHTER_TOOLS = TRANSLUCENT_TOOLS  # older name
 ERASER_TOOLS = {"ERASER", "ERASER_AREA"}
 # Tint used for translucent pens whose file carries no alpha of its own.
 DEFAULT_TRANSLUCENT_ALPHA = 110 / 255
+
+# Opaque pens the tablet draws lighter than solid ink. Fitted on 2026-09-04
+# by comparing ink mass per pen against the tablet's own PDF export of a
+# page with every pen (ratio of export to solid rendering at the stored
+# width): pencils ~0.68-0.74, paintbrush ~0.81. The grainy pencil texture
+# itself is not modelled; this matches its average darkness.
+PEN_OPACITY: dict[str, float] = {
+    "PENCIL_1": 0.7,
+    "PENCIL_2": 0.7,
+    "MECHANICAL_PENCIL_1": 0.73,
+    "MECHANICAL_PENCIL_2": 0.73,
+    "PAINTBRUSH_1": 0.82,
+    "PAINTBRUSH_2": 0.82,
+}
+# The marker is a chisel tip: its stored per-point width is the nib's full
+# extent, and the ribbon it actually lays down carries ~15% less ink.
+PEN_WIDTH_FACTOR: dict[str, float] = {"MARKER_1": 0.85, "MARKER_2": 0.85}
 
 V5_HEADER = b"reMarkable .lines file, version=5"
 V5_COLORS = {0: "BLACK", 1: "GRAY", 2: "WHITE"}
@@ -262,7 +279,12 @@ def _decode_v6(tree) -> PageModel:
         if tool in ERASER_TOOLS:
             return
         color, alpha = _line_color(line, tool)
+        if alpha == 1.0:
+            alpha = PEN_OPACITY.get(tool, 1.0)
         widths = _point_widths(line, tool)
+        factor = PEN_WIDTH_FACTOR.get(tool)
+        if factor:
+            widths = [w * factor for w in widths]
         page.strokes.append(
             Stroke(
                 points=[(p.x + x_shift + ax, p.y + ay) for p in line.points],

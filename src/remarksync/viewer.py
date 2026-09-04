@@ -349,12 +349,15 @@ class PageCanvas(QWidget):
                 continue
             color = QColor(stroke.color)
             painter.save()
+            lighter = stroke.alpha < 1.0
             if stroke.highlighter:
                 # translucent ink is filled as one outline so that no two
                 # parts of the same stroke overlap and darken each other
                 color.setAlphaF(stroke.alpha)
                 painter.setCompositionMode(QPainter.CompositionMode_Multiply)
-            if stroke.highlighter or (not stroke.uniform and stroke.width >= OUTLINE_MIN_WIDTH):
+            elif lighter:
+                color.setAlphaF(stroke.alpha)  # pencils, paintbrush: lighter than solid ink
+            if stroke.highlighter or lighter or (not stroke.uniform and stroke.width >= OUTLINE_MIN_WIDTH):
                 # wide or translucent ink: one filled outline (exact, no
                 # overlaps); thin pens are cheaper as stroked paths and their
                 # width steps are sub-pixel anyway

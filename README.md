@@ -98,10 +98,13 @@ Things to sanity-check against your own tablet backup on first use:
 - **Pens** draw at the per-point width the tablet stored (pressure, tilt
   and thickness already applied) and in the per-line colour software 3.x
   writes (six highlighter tints, the shader's grey at 25%); this needs
-  `rmscene >= 0.8`. Checked against a test page with every pen: ballpoint,
-  fineliner, pencil, mechanical pencil, calligraphy, highlighter, marker,
-  shader and paintbrush all match in width and colour. Pencil texture
-  (the tablet's grainy look) is not modelled; pencil draws solid.
+  `rmscene >= 0.8`. Checked against the tablet's own PDF export of a test
+  page with every pen: ink mass per pen matches within a few percent
+  (pencils and paintbrush are drawn lighter than solid ink, the marker's
+  chisel tip lays down 85% of its stored width; see `PEN_OPACITY` and
+  `PEN_WIDTH_FACTOR` in `rmdata.py`). What is not modelled is texture:
+  the tablet's pencil is grainy where ours is a smooth grey, and its
+  marker has a chisel edge where ours is rounded.
 - Fonts: text blocks render with Segoe UI. (On font-less/offscreen
   systems text shows as boxes — that's environmental, not a bug.)
 

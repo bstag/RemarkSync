@@ -76,7 +76,20 @@ def test_line_colour_comes_from_the_file_when_present():
     blue, grey, red = page.strokes
     assert blue.color == "#beeafe" and blue.highlighter and blue.alpha == pytest.approx(110 / 255)
     assert grey.color == "#211e1c" and grey.highlighter and grey.alpha == pytest.approx(64 / 255)
-    assert red.color == "#ea2027" and not red.highlighter and red.alpha == 1.0  # marker is opaque
+    assert red.color == "#c23132" and not red.highlighter and red.alpha == 1.0  # marker is opaque
+
+
+def test_pen_opacity_and_marker_width_factor():
+    from .conftest import line, page_rm
+
+    pencil = line(si.PenColor.BLACK, si.Pen.PENCIL_2, [(0, 0), (10, 0)], point_width=6.0)
+    marker = line(si.PenColor.BLACK, si.Pen.MARKER_2, [(0, 20), (10, 20)], point_width=20.0)
+    ball = line(si.PenColor.BLACK, si.Pen.BALLPOINT_2, [(0, 40), (10, 40)], point_width=2.25)
+    page = decode_page(page_rm(strokes=[pencil, marker, ball]))
+    p, m, b = page.strokes
+    assert p.alpha == 0.7 and not p.highlighter and p.widths == [6.0, 6.0]
+    assert m.alpha == 1.0 and m.widths == [17.0, 17.0]  # chisel tip: 85% of the stored width
+    assert b.alpha == 1.0 and b.widths == [2.25, 2.25]
 
 
 def test_points_without_widths_fall_back_to_the_pen_table():
