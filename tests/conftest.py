@@ -76,14 +76,21 @@ def page_rm_v5(lines: list[tuple[int, int, float, list[tuple[float, float]]]]) -
     return bytes(out)
 
 
-def line(color, tool, points, thickness_scale=1.0) -> si.Line:
+def line(color, tool, points, thickness_scale=1.0, point_width=2.25, widths=None) -> si.Line:
+    """A stroke whose points carry the tablet's per-point width in tablet
+    px (stored as int(width * 4), the way rmscene reads it). ``widths``
+    gives one width per point; ``point_width`` gives them all the same."""
+    ws = widths if widths is not None else [point_width] * len(points)
     return si.Line(
         color=color,
         tool=tool,
         thickness_scale=thickness_scale,
         starting_length=0.0,
         move_id=None,
-        points=[si.Point(x=x, y=y, speed=0, direction=0, width=4, pressure=0) for x, y in points],
+        points=[
+            si.Point(x=x, y=y, speed=0, direction=0, width=int(round(w * 4)), pressure=0)
+            for (x, y), w in zip(points, ws)
+        ],
     )
 
 
@@ -157,7 +164,7 @@ def backup_root(tmp_path: Path) -> Path:
             text="typed note about quantum computing",
             strokes=[
                 line(si.PenColor.BLACK, si.Pen.BALLPOINT_1, [(100, 200), (200, 220), (300, 260)]),
-                line(si.PenColor.YELLOW, si.Pen.HIGHLIGHTER_1, [(100, 300), (600, 300)], thickness_scale=2.0),
+                line(si.PenColor.YELLOW, si.Pen.HIGHLIGHTER_1, [(100, 300), (600, 300)], thickness_scale=2.0, point_width=30.0),
                 line(si.PenColor.GRAY, si.Pen.ERASER, [(0, 0), (100, 100)]),  # must be ignored
             ],
         )

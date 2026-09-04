@@ -53,12 +53,16 @@ PEN_COLORS: dict[str, str] = {
     "YELLOW_2": "#ffe082",
 }
 
-# Base stroke widths in tablet pixels for each pen, before thickness_scale.
+# Fallback stroke widths in tablet pixels for each pen, before
+# thickness_scale. v6 files carry the tablet's own computed width on every
+# point (pressure, tilt and the thickness setting already applied), and
+# that is what gets drawn; these only stand in when a file has none.
 PEN_WIDTHS: dict[str, float] = {
     "BALLPOINT_1": 2.2,
     "BALLPOINT_2": 2.2,
     "FINELINER_1": 4.5,
     "FINELINER_2": 4.5,
+    "CALIGRAPHY": 3.5,  # rmscene spells it this way; keep both
     "CALLIGRAPHY": 3.5,
     "PENCIL_1": 2.0,
     "PENCIL_2": 2.0,
@@ -88,13 +92,30 @@ V5_COLORS = {0: "BLACK", 1: "GRAY", 2: "WHITE"}
 
 @dataclass
 class Stroke:
-    """A pen stroke: polyline in page coordinates."""
+    """A pen stroke: polyline in page coordinates.
+
+    ``widths`` holds the stroke width at every point, in tablet pixels, as
+    the tablet computed it from pressure, tilt, speed and the pen's
+    thickness setting; it has one entry per point. ``width`` is their mean,
+    for callers that want one number.
+    """
 
     points: list[tuple[float, float]]
     color: str  # hex
-    width: float  # tablet px, already includes thickness_scale
+    width: float  # tablet px, mean of ``widths``
     highlighter: bool = False
     layer_visible: bool = True
+    widths: list[float] = field(default_factory=list)
+    tool: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.widths:
+            self.widths = [self.width] * len(self.points)
+
+    @property
+    def uniform(self) -> bool:
+        """True when every point has the same width."""
+        return len(set(self.widths)) <= 1
 
 
 @dataclass
@@ -240,14 +261,16 @@ def _decode_v6(tree) -> PageModel:
         if tool in ERASER_TOOLS:
             return
         color = PEN_COLORS.get(getattr(line.color, "name", str(line.color)), "#1a1a1a")
-        base_w = PEN_WIDTHS.get(tool, 2.5)
+        widths = _point_widths(line, tool)
         page.strokes.append(
             Stroke(
                 points=[(p.x + x_shift + ax, p.y + ay) for p in line.points],
                 color=color,
-                width=max(0.5, base_w * (line.thickness_scale or 1.0)),
+                width=sum(widths) / len(widths) if widths else 0.5,
                 highlighter=tool in HIGHLIGHTER_TOOLS,
                 layer_visible=visible,
+                widths=widths,
+                tool=tool,
             )
         )
 
@@ -271,6 +294,17 @@ def _decode_v6(tree) -> PageModel:
     if tree.root_text is not None:
         page.texts.append(text_block(tree.root_text, 0.0, 0.0))
     return page
+
+
+def _point_widths(line: si.Line, tool: str) -> list[float]:
+    """Per-point stroke widths in tablet px. rmscene stores each point's
+    width as ``int(round(raw * 4))``, so ``/ 4`` restores the tablet's
+    value; a file with no widths falls back to the pen table."""
+    widths = [max(0.5, float(p.width) / 4.0) for p in line.points if p.width]
+    if len(widths) == len(line.points):
+        return widths
+    fallback = max(0.5, PEN_WIDTHS.get(tool, 2.5) * (line.thickness_scale or 1.0))
+    return [fallback] * len(line.points)
 
 
 # ---------------------------------------------------------------- v5 adapter
@@ -326,6 +360,7 @@ def _decode_v5(data: bytes) -> PageModel:
                     color=PEN_COLORS.get(V5_COLORS.get(colour, "BLACK"), "#1a1a1a"),
                     width=max(0.4, min(width, 60.0)),
                     highlighter=width > 8.0,
+                    tool=f"V5_PEN_{pen}",
                 )
             )
         pos = start + 20 + npts * 24

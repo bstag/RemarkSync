@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import fitz  # pymupdf
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QTextLayout, QTextOption
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap, QTextLayout, QTextOption
 from PySide6.QtWidgets import QWidget
 
 from .layout import PageFrame, lay_out
 from .backup import TEMPLATE_BLANK, TEMPLATE_DOTS, TEMPLATE_GRID, TEMPLATE_ISOMETRIC, TEMPLATE_RULED, DocItem, PageRef
-from .rmdata import PageModel, decode_page
-from .textmetrics import TEXT_FONT_PX, TEXT_MIN_BOX_WIDTH
+from .rmdata import PageModel, Stroke, decode_page
+from .textmetrics import TEXT_FONT_PX, TEXT_MIN_BOX_WIDTH, TEXT_TOP_Y, line_height
 
 _TEMPLATE_PEN = QColor(0xB3, 0xB3, 0xB3)
 
@@ -99,6 +99,68 @@ class PdfUnderlay:
         self.doc.close()
 
 
+# Segments whose widths round to the same step share one path. Opaque ink
+# can afford fine steps; translucent ink (highlighter, marker) uses coarse
+# ones because every run boundary is a spot where two round caps overlap
+# and multiply-blend darker.
+WIDTH_STEP_OPAQUE = 0.25
+WIDTH_STEP_TRANSLUCENT = 2.0
+
+
+def _stroke_paths(stroke: Stroke) -> list[tuple[float, QPainterPath]]:
+    """The stroke as (width, path) pairs: one path per distinct width, with
+    consecutive same-width segments chained into one polyline, so a
+    pressure-varying line costs a handful of draw calls, not one per point."""
+    if stroke.uniform:
+        path = QPainterPath(QPointF(*stroke.points[0]))
+        for x, y in stroke.points[1:]:
+            path.lineTo(QPointF(x, y))
+        return [(stroke.widths[0] if stroke.widths else stroke.width, path)]
+    step = WIDTH_STEP_TRANSLUCENT if stroke.highlighter else WIDTH_STEP_OPAQUE
+    paths: dict[float, QPainterPath] = {}
+    pts, ws = stroke.points, stroke.widths
+    current: float | None = None
+    for i in range(1, len(pts)):
+        w = round((ws[i - 1] + ws[i]) / 2 / step) * step
+        path = paths.get(w)
+        if path is None:
+            path = paths[w] = QPainterPath()
+        if w != current:
+            path.moveTo(QPointF(*pts[i - 1]))
+            current = w
+        path.lineTo(QPointF(*pts[i]))
+    return sorted(paths.items())
+
+
+class _PixmapCache:
+    """A bounded, most-recently-used cache of painted pages. A heavy page
+    (100k points) takes most of a second to paint; scrolling it back into
+    view should be a blit."""
+
+    def __init__(self, capacity: int = 16):
+        self._capacity = capacity
+        self._items: dict[tuple, QPixmap] = {}
+
+    def get(self, key: tuple) -> QPixmap | None:
+        pix = self._items.pop(key, None)
+        if pix is not None:
+            self._items[key] = pix  # most recent last
+        return pix
+
+    def put(self, key: tuple, pix: QPixmap) -> None:
+        self._items.pop(key, None)
+        self._items[key] = pix
+        while len(self._items) > self._capacity:
+            del self._items[next(iter(self._items))]
+
+    def drop(self, owner: object) -> None:
+        for key in [k for k in self._items if k[0] == owner]:
+            del self._items[key]
+
+
+_painted_pages = _PixmapCache()
+
+
 def frame_for(doc: DocItem, page: PageRef, underlay: PdfUnderlay | None) -> PageFrame:
     """Decode and lay out one page of a document."""
     model = decode_page(page.rm_path) if page.rm_path else PageModel()
@@ -132,10 +194,25 @@ class PageCanvas(QWidget):
         self.setFixedSize(int(self._frame.width * scale), int(self._frame.height * scale))
         self.update()
 
+    def deleteLater(self) -> None:  # noqa: N802
+        _painted_pages.drop(id(self))
+        super().deleteLater()
+
     # -- painting ---------------------------------------------------------
 
     def paintEvent(self, event) -> None:  # noqa: N802
-        painter = QPainter(self)
+        key = (id(self), self._scale)
+        pix = _painted_pages.get(key)
+        if pix is None:
+            pix = QPixmap(self.size())
+            pix.fill(Qt.white)
+            painter = QPainter(pix)
+            self._paint_frame(painter)
+            painter.end()
+            _painted_pages.put(key, pix)
+        QPainter(self).drawPixmap(0, 0, pix)
+
+    def _paint_frame(self, painter: QPainter) -> None:
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.scale(self._scale, self._scale)
 
@@ -182,49 +259,56 @@ class PageCanvas(QWidget):
         for stroke in model.strokes:
             if not stroke.layer_visible or len(stroke.points) < 2:
                 continue
-            path = QPainterPath(QPointF(*stroke.points[0]))
-            for x, y in stroke.points[1:]:
-                path.lineTo(QPointF(x, y))
             color = QColor(stroke.color)
+            if stroke.highlighter:
+                color.setAlpha(110)
             pen = QPen(color)
-            pen.setWidthF(max(0.4, stroke.width))
             pen.setCapStyle(Qt.RoundCap)
             pen.setJoinStyle(Qt.RoundJoin)
             painter.save()
             if stroke.highlighter:
-                color.setAlpha(110)
-                pen.setColor(color)
-            painter.setPen(pen)
-            if stroke.highlighter:
                 painter.setCompositionMode(QPainter.CompositionMode_Multiply)
-            painter.drawPath(path)
+            for width, path in _stroke_paths(stroke):
+                pen.setWidthF(max(0.4, width))
+                painter.setPen(pen)
+                painter.drawPath(path)
             painter.restore()
 
     def _paint_texts(self, painter: QPainter, model: PageModel) -> None:
+        """Typed text, one paragraph per text line: each paragraph starts at
+        the same anchor y the decoder used to pin ink to it (top offset plus
+        the accumulated per-style line heights), so text and anchored ink
+        agree. Long paragraphs wrap inside the block width."""
         if not model.texts:
             return
         painter.save()
+        option = QTextOption()
+        option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
         for block in model.texts:
             if not block.text.strip():
                 continue
             box_width = max(block.width, TEXT_MIN_BOX_WIDTH)
-
-            font = QFont("Segoe UI")
-            font.setPixelSize(TEXT_FONT_PX)
-            option = QTextOption()
-            option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
-            layout = QTextLayout(block.text, font, painter.device())
-            layout.setTextOption(option)
-            layout.setCacheEnabled(True)
-            line_y = block.pos_y
-            layout.beginLayout()
-            while True:
-                line = layout.createLine()
-                if not line.isValid():
-                    break
-                line.setLineWidth(box_width)
-                line.setPosition(QPointF(block.pos_x, line_y))
-                line.draw(painter, QPointF(0, 0))
-                line_y += line.height()
-            layout.endLayout()
+            paragraphs = block.paragraphs or [("PLAIN", part) for part in block.text.split("\n")]
+            line_y = block.pos_y + TEXT_TOP_Y
+            for style, text in paragraphs:
+                height = line_height(style)
+                if text.strip():
+                    font = QFont("Segoe UI")
+                    font.setPixelSize(TEXT_FONT_PX)
+                    font.setBold(style in ("BOLD", "HEADING"))
+                    layout = QTextLayout(text, font, painter.device())
+                    layout.setTextOption(option)
+                    layout.setCacheEnabled(True)
+                    layout.beginLayout()
+                    wrap_y = line_y
+                    while True:
+                        line = layout.createLine()
+                        if not line.isValid():
+                            break
+                        line.setLineWidth(box_width)
+                        line.setPosition(QPointF(block.pos_x, wrap_y))
+                        line.draw(painter, QPointF(0, 0))
+                        wrap_y += line.height()
+                    layout.endLayout()
+                line_y += height
         painter.restore()

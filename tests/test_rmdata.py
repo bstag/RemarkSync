@@ -1,5 +1,7 @@
 """Page decoder: bytes in, PageModel in page coordinates out."""
 
+import pytest
+
 from remarksync.backup import iter_docs, scan_root
 from remarksync.rmdata import PAGE_WIDTH, decode_page, page_text
 from rmscene import scene_items as si
@@ -20,7 +22,9 @@ def test_decode_page_strokes(backup_root):
     ballpoint = page.strokes[0]
     assert ballpoint.color == "#1a1a1a"
     assert ballpoint.highlighter is False
-    assert abs(ballpoint.width - 2.2) < 0.01
+    assert ballpoint.tool == "BALLPOINT_1"
+    assert ballpoint.widths == [2.25, 2.25, 2.25]  # the tablet's per-point width
+    assert ballpoint.width == 2.25
     assert len(ballpoint.points) == 3
     # page coordinates: v6 x is centre-relative and gets the +W/2 shift,
     # y is already measured from the page top
@@ -35,7 +39,7 @@ def test_highlighter_flag_and_scale(backup_root):
     hl = page.strokes[1]
     assert hl.highlighter is True
     assert hl.color == "#f2b800"
-    assert abs(hl.width - 56.0) < 0.01  # 28 * thickness_scale 2.0
+    assert hl.width == 30.0  # the tablet's stored width, thickness already applied
     assert page.strokes[1].points[0][1] > page.strokes[0].points[0][1]  # below ballpoint
 
 
@@ -46,6 +50,25 @@ def test_typed_text_extracted(backup_root):
     assert any("quantum" in t.text for t in page.texts)
     block = next(t for t in page.texts if "quantum" in t.text)
     assert block.height == 70  # one PLAIN paragraph
+
+
+def test_pressure_varying_widths_are_kept_per_point():
+    from .conftest import line, page_rm
+
+    blob = page_rm(strokes=[line(si.PenColor.BLACK, si.Pen.BALLPOINT_2, [(0, 0), (10, 0), (20, 0)], widths=[2.0, 3.0, 4.5])])
+    stroke = decode_page(blob).strokes[0]
+    assert stroke.widths == [2.0, 3.0, 4.5]
+    assert stroke.width == pytest.approx(9.5 / 3)
+    assert not stroke.uniform
+
+
+def test_points_without_widths_fall_back_to_the_pen_table():
+    from .conftest import line, page_rm
+
+    blob = page_rm(strokes=[line(si.PenColor.BLACK, si.Pen.FINELINER_2, [(0, 0), (10, 0)], thickness_scale=2.0, point_width=0.0)])
+    stroke = decode_page(blob).strokes[0]
+    assert stroke.widths == [9.0, 9.0]  # 4.5 * 2.0
+    assert stroke.uniform
 
 
 def test_garbage_decodes_to_blank_model(tmp_path):
