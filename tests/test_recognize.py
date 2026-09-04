@@ -128,3 +128,41 @@ def test_windows_recogniser_answers_for_real_strokes(backup_root):
     words = recognise_windows(source.model)
     assert isinstance(words, list)
     assert all(isinstance(w.text, str) for w in words)
+
+
+def test_trocr_extractor_reads_lines_and_caches(tmp_path, backup_root):
+    from remarksync.recognize import TrOCRExtractor
+
+    class FakeModel:
+        calls = 0
+
+        def read_lines(self, images):
+            self.calls += 1
+            return [("hello world", ["hallo world"]) for _ in images]
+
+    model = FakeModel()
+    cache = RecognitionCache(tmp_path / "rec.db")
+    extractor = TrOCRExtractor(cache, model=model, min_strokes=1)  # the fixture line is one stroke
+    source = _ink_source(backup_root)
+    text = extractor(source)
+    assert text.startswith("hello world")
+    assert "(alternatives: hallo world)" in text
+    assert extractor(source) == text and model.calls == 1  # cached
+    assert extractor(PageSource(source.doc, source.page, PageModel())) == ""
+
+
+def test_engine_selection_prefers_trocr_and_falls_back(monkeypatch, tmp_path):
+    import remarksync.recognize as rec
+
+    cache = RecognitionCache(tmp_path / "rec.db")
+    monkeypatch.setattr(rec, "trocr_available", lambda: False)
+    monkeypatch.setattr(rec, "windows_ink_available", lambda: True)
+    monkeypatch.setitem(rec.ENGINES, rec.ENGINE_TROCR, (lambda: False, rec.ENGINES[rec.ENGINE_TROCR][1]))
+    monkeypatch.setitem(rec.ENGINES, rec.ENGINE_WINDOWS, (lambda: True, rec.ENGINES[rec.ENGINE_WINDOWS][1]))
+    assert rec.handwriting_extractor(cache).engine == rec.ENGINE_WINDOWS
+    monkeypatch.setitem(rec.ENGINES, rec.ENGINE_TROCR, (lambda: True, rec.ENGINES[rec.ENGINE_TROCR][1]))
+    assert rec.handwriting_extractor(cache).engine == rec.ENGINE_TROCR
+    assert rec.handwriting_extractor(cache, rec.ENGINE_WINDOWS).engine == rec.ENGINE_WINDOWS
+    monkeypatch.setitem(rec.ENGINES, rec.ENGINE_TROCR, (lambda: False, rec.ENGINES[rec.ENGINE_TROCR][1]))
+    monkeypatch.setitem(rec.ENGINES, rec.ENGINE_WINDOWS, (lambda: False, rec.ENGINES[rec.ENGINE_WINDOWS][1]))
+    assert rec.handwriting_extractor(cache) is None

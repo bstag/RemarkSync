@@ -30,6 +30,7 @@ CLI:
 ```bash
 .venv\Scripts\python -m remarksync pull C:\Backups\reMarkable\raw   # update backup from tablet (USB), changed documents only
 .venv\Scripts\python -m remarksync scan  C:\Backups\reMarkable\raw  # print document tree
+.venv\Scripts\python -m remarksync index C:\Backups\reMarkable\raw --handwriting  # search index, reading handwriting too
 .venv\Scripts\python -m remarksync compile notes.md notes.rmdoc     # Markdown → .rmdoc
 ```
 
@@ -106,15 +107,20 @@ Things to sanity-check against your own tablet backup on first use:
   holds about one screen of text, charged per paragraph with the room the
   tablet gives it; a long paragraph is never split across pages.
 - **Search covers** document names, typed text, PDF-highlight text, and
-  handwriting two ways: pages you converted to text on the tablet are
-  indexed from the conversion the device stored beside the document, and
-  on Windows the built-in ink recogniser can read the rest
-  (`remarksync index DIR --handwriting`, opt-in). Recognition results are
-  cached by the ink's hash in `<backup>\.remarksync-recognition.db`, so a
-  page is recognised once. The Windows engine is roughly two words in
-  three right on cursive, better counting the alternatives it returns,
-  which are indexed too; it can stall on some ink, in which case that
-  page is skipped for good and the rest of the run goes on without it.
+  handwriting three ways. Pages converted to text on the tablet are
+  indexed for free: "add as new page" makes a typed page, and a shared
+  conversion leaves a file beside the document. For the rest,
+  `remarksync index DIR --handwriting` runs TrOCR, Microsoft's free
+  handwriting model, locally: install `pip install -e .[handwriting]`
+  (PyTorch with CUDA first, from the PyTorch index, for GPU speed; the
+  model downloads once, about 1.3 GB). Measured against the tablet's own
+  MyScript reading of a 532-word journal page it finds 80% of the words,
+  at a tenth of a second per written line on an RTX 4060 Ti. Lines are
+  cut from the strokes by geometry (`inklines.py`). Results are cached by
+  the ink's hash in `<backup>\.remarksync-recognition.db`, so a page is
+  read once. The Windows ink recogniser is available as an alternative
+  engine (`--engine windows-ink`, `.[windows-ink]` extra) but it fails or
+  stalls on long pages, so TrOCR is the default.
 - **Pens** draw at the per-point width the tablet stored (pressure, tilt
   and thickness already applied) and in the per-line colour software 3.x
   writes (six highlighter tints, the shader's grey at 25%); this needs
@@ -153,6 +159,9 @@ src/remarksync/
                  background workers for indexing and page decoding
   pull.py        incremental backup pull over ssh+tar: changed documents only, with a
                  local-directory adapter for tests
+  recognize.py   handwriting as searchable text: the tablet's own conversions, the
+                 TrOCR and Windows-ink engines behind one seam, the recognition cache
+  inklines.py    cut a page's strokes into written lines and render them for an engine
 ```
 
 The pipeline for one page is decode → lay out → paint, and each step is a
@@ -169,7 +178,7 @@ index file it creates there). Nothing is uploaded anywhere.
 .venv\Scripts\python -m pytest tests/ -q
 ```
 
-54 tests cover the scan → decode → lay out → search → compile chain,
+95 tests cover the scan → decode → lay out → search → compile chain,
 including authoring `.rm` fixtures with rmscene's writer, every page-frame
 rule, index refresh and cancellation, and offscreen GUI smoke tests.
 

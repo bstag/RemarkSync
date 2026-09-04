@@ -1,18 +1,25 @@
 """Handwriting as searchable text: the extractors that feed the search
 index for pages of ink, and the cache that keeps every recognition.
 
-Two sources, in order of preference:
+Three sources, in order of preference:
 
-* **Tablet conversions.** When a page is converted to text on the device,
-  the result lands beside the document in ``<uuid>.textconversion/<page>.json``
-  (MyScript's recognition, the best available for this ink). It costs
-  nothing to index and never needs redoing.
-* **Windows ink recognition.** Windows ships a stroke-based handwriting
-  recogniser (the one behind its handwriting panel), reachable through the
-  WinRT projection. It works from the page's strokes, offline, in about a
-  second per page, and returns the best reading of each word plus
-  alternatives; the index gets both, so a search finds a word the top
-  reading missed. Windows only, and optional.
+* **Tablet conversions.** When a page is converted to text on the device
+  and shared, the result lands beside the document in
+  ``<uuid>.textconversion/<page>.json`` (MyScript's recognition, the best
+  available for this ink). Converting with "add as new page" instead puts
+  the text into the notebook as a typed page, which the index reads like
+  any typed text. Neither costs anything to index.
+* **TrOCR.** Microsoft's handwriting model (``trocr-large-handwritten``,
+  free, offline, runs on the GPU when there is one) reads one written
+  line at a time; :mod:`inklines` cuts the page into lines by geometry.
+  Measured against MyScript on a 532-word journal page: 80% of the words
+  at the top reading, 83% with runner-up readings, a tenth of a second per
+  line on an RTX 4060 Ti. The default engine when PyTorch and
+  transformers are installed (``pip install -e .[handwriting]``).
+* **Windows ink recognition.** The stroke-based recogniser behind the
+  Windows handwriting panel. Good on short pages, but it fails or stalls on
+  long ones and a stall wedges it machine-wide for minutes, so it is only
+  an alternative engine, never the default.
 
 Every recognition is cached by a hash of the strokes it came from, in a
 small database beside the search index, so a page is recognised once and
@@ -39,6 +46,8 @@ log = logging.getLogger(__name__)
 
 CACHE_NAME = ".remarksync-recognition.db"
 ENGINE_WINDOWS = "windows-ink"
+ENGINE_TROCR = "trocr-large-handwritten"
+TROCR_MODEL = "microsoft/trocr-large-handwritten"
 RECOGNITION_TIMEOUT = 30.0  # seconds per page before giving up on the recogniser
 FAILED = "\x00failed"  # cache marker: the recogniser stalled on this ink; never retry it
 
@@ -399,6 +408,129 @@ class WindowsInkExtractor:
         text = words_to_text(words)
         self.cache.put(key, self.engine, text)
         return text
+
+
+# ------------------------------------------------------------------- TrOCR
+
+
+def trocr_available() -> bool:
+    try:
+        import torch  # noqa: F401
+        import transformers  # noqa: F401
+        from PIL import Image  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
+class TrOCRModel:
+    """The handwriting model, loaded on first use, kept for the process.
+    Reads a batch of line images and returns their text (plus runner-up
+    readings when ``beams`` > 1 and ``alternatives`` > 0)."""
+
+    def __init__(self, name: str = TROCR_MODEL, beams: int = 1, alternatives: int = 0, batch: int = 16):
+        self.name = name
+        self.beams = beams
+        self.alternatives = alternatives if beams > 1 else 0
+        self.batch = batch
+        self._processor = None
+        self._model = None
+        self.device = "cpu"
+
+    def _load(self) -> None:
+        import torch
+        import transformers
+        from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+
+        transformers.logging.set_verbosity_error()  # the checkpoint's unused-weights notice is expected
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._processor = TrOCRProcessor.from_pretrained(self.name)
+        self._model = VisionEncoderDecoderModel.from_pretrained(self.name).to(self.device).eval()
+        log.info("loaded %s on %s", self.name, self.device)
+
+    def read_lines(self, images) -> list[tuple[str, list[str]]]:
+        """(top reading, runner-up readings) per line image."""
+        import torch
+
+        if self._model is None:
+            self._load()
+        returns = 1 + self.alternatives
+        out: list[tuple[str, list[str]]] = []
+        with torch.no_grad():
+            for i in range(0, len(images), self.batch):
+                chunk = [img.convert("RGB") for img in images[i : i + self.batch]]
+                pixels = self._processor(images=chunk, return_tensors="pt").pixel_values.to(self.device)
+                ids = self._model.generate(pixels, max_new_tokens=96, num_beams=self.beams, num_return_sequences=returns)
+                texts = self._processor.batch_decode(ids, skip_special_tokens=True)
+                for j in range(0, len(texts), returns):
+                    out.append((texts[j].strip(), [t.strip() for t in texts[j + 1 : j + returns] if t.strip()]))
+        return out
+
+
+_trocr: TrOCRModel | None = None
+
+
+def trocr_model() -> TrOCRModel:
+    global _trocr
+    if _trocr is None:
+        _trocr = TrOCRModel()
+    return _trocr
+
+
+class TrOCRExtractor:
+    """Handwriting on a page as searchable text via TrOCR, cached by stroke
+    hash so each page is read once. Lines come from :mod:`inklines`."""
+
+    engine = ENGINE_TROCR
+
+    def __init__(self, cache: RecognitionCache, model: TrOCRModel | None = None, min_strokes: int = 2):
+        self.cache = cache
+        self.model = model
+        self.min_strokes = min_strokes  # skip lines that are just a dot or a tick
+
+    def __call__(self, source: PageSource) -> str:
+        from .inklines import cut_lines, render_line
+
+        model = source.model
+        if not ink_strokes(model):
+            return ""
+        key = stroke_hash(model)
+        cached = self.cache.get(key, self.engine)
+        if cached is not None:
+            return "" if cached == FAILED else cached
+        lines = [ln for ln in cut_lines(model) if len(ln.strokes) >= self.min_strokes]
+        if not lines:
+            return ""
+        try:
+            readings = (self.model or trocr_model()).read_lines([render_line(ln) for ln in lines])
+        except Exception as exc:
+            log.warning("TrOCR failed for %s page %d: %s", source.doc.name, source.page.index, exc)
+            return ""
+        top = "\n".join(t for t, _ in readings if t)
+        alternatives = sorted({a for _, alts in readings for a in alts})
+        text = top + ("\n(alternatives: " + " ".join(alternatives) + ")" if alternatives else "")
+        self.cache.put(key, self.engine, text)
+        return text
+
+
+ENGINES = {ENGINE_TROCR: (trocr_available, lambda cache: TrOCRExtractor(cache)),
+           ENGINE_WINDOWS: (windows_ink_available, lambda cache: WindowsInkExtractor(cache))}
+
+
+def available_engines() -> list[str]:
+    return [name for name, (ok, _) in ENGINES.items() if ok()]
+
+
+def handwriting_extractor(cache: RecognitionCache, engine: str | None = None):
+    """The extractor for ``engine`` (or the best available: TrOCR, then
+    Windows ink), or None when none is available."""
+    names = [engine] if engine else list(ENGINES)
+    for name in names:
+        ok, make = ENGINES.get(name, (lambda: False, None))
+        if ok():
+            return make(cache)
+    return None
 
 
 if __name__ == "__main__":

@@ -31,7 +31,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p_index = sub.add_parser("index", help="update the search index of a backup")
     p_index.add_argument("root", type=str)
-    p_index.add_argument("--handwriting", action="store_true", help="also recognise handwriting (Windows ink recogniser; cached)")
+    p_index.add_argument("--handwriting", action="store_true", help="also recognise handwriting (TrOCR on the GPU if installed, else Windows ink; cached)")
+    p_index.add_argument("--engine", default=None, help="handwriting engine: trocr-large-handwritten or windows-ink")
     p_index.add_argument("--rebuild", action="store_true", help="re-index every document")
 
     p_compile = sub.add_parser("compile", help="compile Markdown into a .rmdoc")
@@ -78,9 +79,11 @@ def main(argv: list[str] | None = None) -> int:
 
         from .library import Library
 
-        library = Library(Path(args.root), handwriting=args.handwriting)
+        library = Library(Path(args.root), handwriting=args.handwriting, engine=args.engine)
         if args.handwriting and not library.handwriting:
-            print("handwriting recognition is not available (needs Windows and the winrt inking package)")
+            print("handwriting recognition is not available: install the [handwriting] extra (TrOCR) or the winrt inking package")
+        elif args.handwriting:
+            print(f"handwriting engine: {library.handwriting}")
         t0 = time.perf_counter()
         run = library.rebuild_index if args.rebuild else library.refresh_index
         report = run(progress=lambda name: print(f"  indexed {name}") or True)

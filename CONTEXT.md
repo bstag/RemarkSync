@@ -115,8 +115,19 @@ _Avoid_: reindex, full build
 
 **Extractor**:
 A way of turning a page into searchable text. Typed text and highlights are
-one extractor; handwriting recognition would be another.
+one extractor, the tablet's own conversion of a page another, handwriting
+recognition a third.
 _Avoid_: tokenizer, indexer plugin
+
+**Engine** (of handwriting recognition):
+The program that reads ink: TrOCR (the default, local, line by line) or
+the Windows ink recogniser. Recognitions are cached per engine.
+_Avoid_: OCR backend, model (which is TrOCR's weights, not the seam)
+
+**Ink line**:
+One written line of a page, as the strokes whose vertical centres cluster
+together. What the engine reads; cut by geometry, never by pixels.
+_Avoid_: text line (typed text has those), row
 
 **Hit**:
 One search result: a document, a page number and a snippet.

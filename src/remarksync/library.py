@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .backup import DocItem, iter_docs, scan_root
-from .recognize import CACHE_NAME, RecognitionCache, WindowsInkExtractor, tablet_conversion, windows_ink_available
+from .recognize import CACHE_NAME, RecognitionCache, handwriting_extractor, tablet_conversion
 from .search import DEFAULT_EXTRACTORS, IndexReport, Progress, SearchHit, SearchIndex
 
 INDEX_NAME = ".remarksync-index.db"
@@ -32,27 +32,29 @@ class NoIndexError(LookupError):
 class Library:
     """An opened backup folder. Scans on construction; ``refresh`` rescans."""
 
-    def __init__(self, root: Path, handwriting: bool = False):
+    def __init__(self, root: Path, handwriting: bool = False, engine: str | None = None):
         self.root = Path(root)
         self.tree: list = []
         self._docs: dict[str, DocItem] = {}
         self._index = SearchIndex(self.index_path)
         self.recognition = RecognitionCache(self.root / CACHE_NAME)
+        self._engine = engine
         self.handwriting = handwriting
         self.refresh()
 
     @property
-    def handwriting(self) -> bool:
-        """Whether indexing also recognises handwriting with the Windows
-        ink recogniser (the tablet's own conversions are always indexed)."""
+    def handwriting(self) -> str | None:
+        """The handwriting engine indexing uses, or None (the tablet's own
+        conversions are always indexed)."""
         return self._handwriting
 
     @handwriting.setter
     def handwriting(self, on: bool) -> None:
-        self._handwriting = bool(on) and windows_ink_available()
+        extractor = handwriting_extractor(self.recognition, self._engine) if on else None
+        self._handwriting = extractor.engine if extractor is not None else None
         extractors = list(DEFAULT_EXTRACTORS) + [tablet_conversion]
-        if self._handwriting:
-            extractors.append(WindowsInkExtractor(self.recognition))
+        if extractor is not None:
+            extractors.append(extractor)
         self._index.extractors = extractors
 
     # ------------------------------------------------------------ documents
