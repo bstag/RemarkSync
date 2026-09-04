@@ -184,7 +184,9 @@ def test_read_handwriting_toggle_wires_the_engine_into_indexing(qapp, backup_roo
     win = MainWindow()
     win.open_folder(backup_root)
     assert not win.handwriting_action.isChecked()
+    assert win.handwriting_action.text() == "Read Handwriting: Off"
     win.handwriting_action.setChecked(True)
+    assert win.handwriting_action.text() == "Read Handwriting: On"
     win.update_index()
     deadline = time.monotonic() + 20
     while win.is_indexing and time.monotonic() < deadline:

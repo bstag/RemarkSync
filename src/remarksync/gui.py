@@ -182,8 +182,9 @@ class MainWindow(QMainWindow):
         self.handwriting_action.setCheckable(True)
         self.handwriting_action.setToolTip("When indexing, also read handwriting (TrOCR on the GPU if installed, "
                                            "else the Windows ink recogniser); results are cached per page")
+        self.handwriting_action.toggled.connect(self._on_handwriting_toggled)
         self.handwriting_action.setChecked(self.settings.value("handwriting", False, type=bool))
-        self.handwriting_action.toggled.connect(lambda on: self.settings.setValue("handwriting", on))
+        self._on_handwriting_toggled(self.handwriting_action.isChecked())
         add_action("Compile Markdown → .rmdoc…", self.compile_md_action, "Ctrl+M")
         toolbar.addSeparator()
         add_action("Zoom −", lambda: self.zoom(-0.1), "Ctrl+-")
@@ -391,6 +392,10 @@ class MainWindow(QMainWindow):
             self.cancel_indexing()
         else:
             self._start_indexing(force=False)
+
+    def _on_handwriting_toggled(self, on: bool) -> None:
+        self.settings.setValue("handwriting", on)
+        self.handwriting_action.setText(f"Read Handwriting: {'On' if on else 'Off'}")
 
     def rebuild_index(self) -> None:
         """Re-index everything from scratch (cancels a running update first)."""
