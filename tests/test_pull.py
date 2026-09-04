@@ -93,3 +93,46 @@ def test_plan_is_pure(backup_root, tmp_path):
     report = plan(remote, tmp_path / "empty-mirror")
     assert set(report.new) == set(remote) and report.unchanged == []
     assert JOURNAL_UUID in report.new
+
+
+def test_highlights_directory_travels_with_its_document_and_is_replaced(backup_root, tmp_path):
+    # the tablet keeps a document's highlights in a <uuid>.highlights directory
+    hl = backup_root / f"{PDF_UUID}.highlights"
+    hl.mkdir()
+    (hl / "page0.json").write_text("{}")
+    dest = tmp_path / "mirror"
+    pull(dest, LocalTablet(backup_root))
+    assert (dest / f"{PDF_UUID}.highlights" / "page0.json").exists()
+    # an edit replaces the whole document, directories included
+    meta_path = backup_root / f"{PDF_UUID}.metadata"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["lastModified"] = "1800000000000"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    (hl / "page0.json").unlink()
+    (hl / "page1.json").write_text("{}")
+    report = pull(dest, LocalTablet(backup_root))
+    assert report.changed == [PDF_UUID]
+    assert not (dest / f"{PDF_UUID}.highlights" / "page0.json").exists()
+    assert (dest / f"{PDF_UUID}.highlights" / "page1.json").exists()
+    assert not (dest / ".remarksync-pull-tmp").exists()
+
+
+def test_failed_fetch_keeps_the_local_copy(backup_root, tmp_path):
+    dest = tmp_path / "mirror"
+    pull(dest, LocalTablet(backup_root))
+    meta_path = backup_root / f"{INK_UUID}.metadata"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["lastModified"] = "1800000000000"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    class Flaky(LocalTablet):
+        def fetch(self, uuids, into):
+            raise RuntimeError("cable pulled")
+
+    import pytest
+
+    with pytest.raises(RuntimeError):
+        pull(dest, Flaky(backup_root))
+    assert (dest / f"{INK_UUID}.content").exists()  # untouched
+    assert (dest / INK_UUID / "0" / "0.rm").exists()
+    assert not (dest / ".remarksync-pull-tmp").exists()

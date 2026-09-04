@@ -106,10 +106,11 @@ class LocalTablet:
 
     def fetch(self, uuids: list[str], into: Path) -> None:
         for u in uuids:
-            for src in self.root.glob(f"{u}.*"):
-                shutil.copy2(src, into / src.name)
-            if (self.root / u).is_dir():
-                shutil.copytree(self.root / u, into / u, dirs_exist_ok=True)
+            for src in _document_entries(self.root, u):
+                if src.is_dir():
+                    shutil.copytree(src, into / src.name, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(src, into / src.name)
 
 
 @dataclass
@@ -168,11 +169,21 @@ def pull(
     if dry_run:
         return report
 
+    staging = dest / STAGING_DIR
     for start in range(0, len(todo), FETCH_BATCH):
         batch = todo[start : start + FETCH_BATCH]
-        for uuid in batch:
-            _remove_document(dest, uuid)  # so pages removed on the tablet vanish here too
-        tablet.fetch(batch, dest)
+        # fetch into a staging directory first: a failed transfer must never
+        # cost local data. Only then is the old copy replaced, wholesale, so
+        # pages removed on the tablet vanish here too.
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir()
+        try:
+            tablet.fetch(batch, staging)
+            for uuid in batch:
+                _remove_document(dest, uuid)
+                _move_document(staging, dest, uuid)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
         for uuid in batch:
             if progress is not None and progress(uuid) is False:
                 report.completed = False
@@ -184,11 +195,29 @@ def pull(
     return report
 
 
+STAGING_DIR = ".remarksync-pull-tmp"
+
+
+def _document_entries(root: Path, uuid: str) -> list[Path]:
+    """Everything belonging to a document: ``<uuid>.*`` (files, and the
+    ``.highlights`` and similar directories) plus the ``<uuid>/`` page dir."""
+    entries = list(root.glob(f"{uuid}.*"))
+    if (root / uuid).is_dir():
+        entries.append(root / uuid)
+    return entries
+
+
 def _remove_document(dest: Path, uuid: str) -> None:
-    for p in dest.glob(f"{uuid}.*"):
-        p.unlink()
-    if (dest / uuid).is_dir():
-        shutil.rmtree(dest / uuid, ignore_errors=True)
+    for p in _document_entries(dest, uuid):
+        if p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+        else:
+            p.unlink()
+
+
+def _move_document(src: Path, dest: Path, uuid: str) -> None:
+    for p in _document_entries(src, uuid):
+        shutil.move(str(p), str(dest / p.name))
 
 
 def _safe_extract(tar: tarfile.TarFile, into: Path) -> None:
