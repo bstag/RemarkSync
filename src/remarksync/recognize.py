@@ -514,8 +514,8 @@ class TrOCRExtractor:
         return text
 
 
-ENGINES = {ENGINE_TROCR: (trocr_available, lambda cache: TrOCRExtractor(cache)),
-           ENGINE_WINDOWS: (windows_ink_available, lambda cache: WindowsInkExtractor(cache))}
+ENGINES = {ENGINE_TROCR: (lambda: trocr_available(), lambda cache: TrOCRExtractor(cache)),
+           ENGINE_WINDOWS: (lambda: windows_ink_available(), lambda cache: WindowsInkExtractor(cache))}
 
 
 def available_engines() -> list[str]:

@@ -157,12 +157,10 @@ def test_engine_selection_prefers_trocr_and_falls_back(monkeypatch, tmp_path):
     cache = RecognitionCache(tmp_path / "rec.db")
     monkeypatch.setattr(rec, "trocr_available", lambda: False)
     monkeypatch.setattr(rec, "windows_ink_available", lambda: True)
-    monkeypatch.setitem(rec.ENGINES, rec.ENGINE_TROCR, (lambda: False, rec.ENGINES[rec.ENGINE_TROCR][1]))
-    monkeypatch.setitem(rec.ENGINES, rec.ENGINE_WINDOWS, (lambda: True, rec.ENGINES[rec.ENGINE_WINDOWS][1]))
     assert rec.handwriting_extractor(cache).engine == rec.ENGINE_WINDOWS
-    monkeypatch.setitem(rec.ENGINES, rec.ENGINE_TROCR, (lambda: True, rec.ENGINES[rec.ENGINE_TROCR][1]))
+    monkeypatch.setattr(rec, "trocr_available", lambda: True)
     assert rec.handwriting_extractor(cache).engine == rec.ENGINE_TROCR
     assert rec.handwriting_extractor(cache, rec.ENGINE_WINDOWS).engine == rec.ENGINE_WINDOWS
-    monkeypatch.setitem(rec.ENGINES, rec.ENGINE_TROCR, (lambda: False, rec.ENGINES[rec.ENGINE_TROCR][1]))
-    monkeypatch.setitem(rec.ENGINES, rec.ENGINE_WINDOWS, (lambda: False, rec.ENGINES[rec.ENGINE_WINDOWS][1]))
+    monkeypatch.setattr(rec, "windows_ink_available", lambda: False)
+    monkeypatch.setattr(rec, "trocr_available", lambda: False)
     assert rec.handwriting_extractor(cache) is None

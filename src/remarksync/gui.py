@@ -178,6 +178,12 @@ class MainWindow(QMainWindow):
             "Index new and changed documents in the background (click again to cancel)",
         )
         add_action("Rebuild Search Index", self.rebuild_index, "Ctrl+Shift+I", "Re-index every document from scratch")
+        self.handwriting_action = toolbar.addAction("Read Handwriting")
+        self.handwriting_action.setCheckable(True)
+        self.handwriting_action.setToolTip("When indexing, also read handwriting (TrOCR on the GPU if installed, "
+                                           "else the Windows ink recogniser); results are cached per page")
+        self.handwriting_action.setChecked(self.settings.value("handwriting", False, type=bool))
+        self.handwriting_action.toggled.connect(lambda on: self.settings.setValue("handwriting", on))
         add_action("Compile Markdown → .rmdoc…", self.compile_md_action, "Ctrl+M")
         toolbar.addSeparator()
         add_action("Zoom −", lambda: self.zoom(-0.1), "Ctrl+-")
@@ -400,6 +406,9 @@ class MainWindow(QMainWindow):
         if self._library is None:
             self.statusBar().showMessage("Open a library folder first.")
             return
+        self._library.handwriting = self.handwriting_action.isChecked()
+        if self.handwriting_action.isChecked() and not self._library.handwriting:
+            self.statusBar().showMessage("No handwriting engine installed (see README: pip install -e .[handwriting]); indexing typed text only.")
         worker = IndexWorker(self._library, force)
         thread = QThread(self)
         worker.moveToThread(thread)

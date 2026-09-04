@@ -152,3 +152,49 @@ def test_opening_another_folder_stops_indexing(qapp, backup_root, tmp_path, monk
     assert not win.is_indexing
     assert win.doc_tree.topLevelItemCount() == 0
     win.close()
+
+
+@pytest.fixture(autouse=True)
+def isolated_settings(tmp_path):
+    """Tests never read or write the user's real RemarkSync settings."""
+    from PySide6.QtCore import QSettings
+
+    QSettings.setDefaultFormat(QSettings.IniFormat)
+    QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(tmp_path / "settings"))
+    yield
+
+
+def test_read_handwriting_toggle_wires_the_engine_into_indexing(qapp, backup_root, monkeypatch):
+    """The toolbar toggle is remembered and, when on, indexing reads ink
+    with the handwriting engine (a fake TrOCR here)."""
+    import time
+
+    import remarksync.recognize as rec
+    from remarksync.gui import MainWindow
+
+    class FakeModel:
+        def read_lines(self, images):
+            return [("zebra crossing", []) for _ in images]
+
+    monkeypatch.setitem(rec.ENGINES, rec.ENGINE_TROCR,
+                        (lambda: True, lambda cache: rec.TrOCRExtractor(cache, model=FakeModel(), min_strokes=1)))
+    monkeypatch.setattr(MainWindow, "_restore_state", lambda self: None)
+    win = MainWindow()
+    win.open_folder(backup_root)
+    assert not win.handwriting_action.isChecked()
+    win.handwriting_action.setChecked(True)
+    win.update_index()
+    deadline = time.monotonic() + 20
+    while win.is_indexing and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    qapp.processEvents()
+    assert win._library.handwriting == rec.ENGINE_TROCR
+    win.search_box.setText("zebra")
+    win.run_search()
+    assert win.results_list.count() >= 1
+    win.close()
+
+    win2 = MainWindow()  # the choice is remembered
+    assert win2.handwriting_action.isChecked()
+    win2.close()

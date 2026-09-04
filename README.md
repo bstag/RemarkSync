@@ -54,7 +54,9 @@ CLI:
    first time and skips unchanged documents instantly afterwards).
    **Rebuild Search Index** (Ctrl+Shift+I) re-indexes everything. The index
    lives in `<backup>\.remarksync-index.db`. Clicking a result jumps to the
-   page.
+   page. Turn on **Read Handwriting** in the toolbar to have indexing read
+   ink as well (needs the handwriting extra, below; the choice is
+   remembered).
 4. **Markdown → .rmdoc** (Ctrl+M): compile any `.md` into a notebook of
    editable text pages. Upload the `.rmdoc` via the tablet's USB web UI
    (http://10.11.99.1) or drag-and-drop into the reMarkable desktop app —
