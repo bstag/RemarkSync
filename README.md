@@ -105,10 +105,16 @@ Things to sanity-check against your own tablet backup on first use:
   itself, so hard-wrapped Markdown paragraphs are joined first. Each page
   holds about one screen of text, charged per paragraph with the room the
   tablet gives it; a long paragraph is never split across pages.
-- **Search covers** document names, typed text, and PDF-highlight text.
-  Raw handwriting is not indexed yet — an OCR pass plugs in as a second
-  *extractor* on the search index (see `search.py`) feeding the same
-  FTS5 table.
+- **Search covers** document names, typed text, PDF-highlight text, and
+  handwriting two ways: pages you converted to text on the tablet are
+  indexed from the conversion the device stored beside the document, and
+  on Windows the built-in ink recogniser can read the rest
+  (`remarksync index DIR --handwriting`, opt-in). Recognition results are
+  cached by the ink's hash in `<backup>\.remarksync-recognition.db`, so a
+  page is recognised once. The Windows engine is roughly two words in
+  three right on cursive, better counting the alternatives it returns,
+  which are indexed too; it can stall on some ink, in which case that
+  page is skipped for good and the rest of the run goes on without it.
 - **Pens** draw at the per-point width the tablet stored (pressure, tilt
   and thickness already applied) and in the per-line colour software 3.x
   writes (six highlighter tints, the shader's grey at 25%); this needs
