@@ -28,7 +28,7 @@ python -m venv .venv
 CLI:
 
 ```bash
-.venv\Scripts\python -m remarksync pull C:\Backups\reMarkable\raw   # pull backup from tablet (USB)
+.venv\Scripts\python -m remarksync pull C:\Backups\reMarkable\raw   # update backup from tablet (USB), changed documents only
 .venv\Scripts\python -m remarksync scan  C:\Backups\reMarkable\raw  # print document tree
 .venv\Scripts\python -m remarksync compile notes.md notes.rmdoc     # Markdown → .rmdoc
 ```
@@ -38,8 +38,13 @@ CLI:
 1. **Get a backup.** On the tablet enable *Settings → Storage → USB web
    interface* (or use Wi-Fi), then run
    `remarksync pull <dest>` (USB device is `root@10.11.99.1`; the password
-   is in *Settings → Help → Copyrights and licences*). Already have an
-   rsync/scp mirror of `~/.local/share/remarkable/xochitl/`? Skip this.
+   is in *Settings → Help → Copyrights and licences*). The first pull
+   copies everything; later pulls fetch only documents whose metadata
+   changed on the tablet, using its own `ssh` and `tar` (no rsync needed).
+   `--prune` also deletes documents the tablet no longer has; `--full`
+   re-copies everything. Already have an rsync/scp mirror of
+   `~/.local/share/remarkable/xochitl/`? Point the app at it and later
+   pulls will update it in place.
 2. **Open Library Folder** (Ctrl+O) and pick the backup directory.
 3. **Update Search Index** (Ctrl+I) once, then search from the toolbar
    (Enter). Indexing runs in the background; click the action again to
@@ -140,7 +145,8 @@ src/remarksync/
                  ink, text, dividers); computes no geometry
   gui.py         main window: tree, viewer, search dock, toolbar actions,
                  background workers for indexing and page decoding
-  pull.py        scp-based raw backup pull from the tablet
+  pull.py        incremental backup pull over ssh+tar: changed documents only, with a
+                 local-directory adapter for tests
 ```
 
 The pipeline for one page is decode → lay out → paint, and each step is a

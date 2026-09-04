@@ -1,7 +1,7 @@
 """CLI entry point.
 
     remarksync                 launch the GUI
-    remarksync pull DIR        pull a raw backup from the tablet into DIR
+    remarksync pull DIR        bring a raw backup up to date from the tablet (changed documents only)
     remarksync scan DIR        print the document tree of a backup
     remarksync compile MD OUT  compile Markdown to a .rmdoc
 """
@@ -21,6 +21,9 @@ def main(argv: list[str] | None = None) -> int:
     p_pull = sub.add_parser("pull", help="pull a raw backup from the tablet over SSH")
     p_pull.add_argument("dest", type=str)
     p_pull.add_argument("--host", default="root@10.11.99.1")
+    p_pull.add_argument("--full", action="store_true", help="fetch every document, not just changed ones")
+    p_pull.add_argument("--prune", action="store_true", help="delete local documents the tablet no longer has")
+    p_pull.add_argument("--dry-run", action="store_true", help="only report what a pull would fetch")
 
     p_scan = sub.add_parser("scan", help="print the document tree of a backup")
     p_scan.add_argument("root", type=str)
@@ -37,8 +40,11 @@ def main(argv: list[str] | None = None) -> int:
         from .pull import pull
         from pathlib import Path
 
-        dest = pull(Path(args.dest), host=args.host)
-        print(f"backup pulled to {dest}")
+        report = pull(Path(args.dest), host=args.host, force=args.full, prune=args.prune, dry_run=args.dry_run,
+                      progress=lambda u: print(f"  fetched {u}") or True)
+        state = "would pull" if args.dry_run else ("pulled" if report.completed else "pull stopped early")
+        print(f"{state}: {len(report.new)} new, {len(report.changed)} changed, {len(report.unchanged)} unchanged, "
+              f"{len(report.removed)} gone from the tablet{' (removed locally)' if args.prune else ''} -> {args.dest}")
         return 0
 
     if args.command == "scan":
