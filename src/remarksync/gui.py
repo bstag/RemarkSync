@@ -412,8 +412,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Open a library folder first.")
             return
         self._library.handwriting = self.handwriting_action.isChecked()
-        if self.handwriting_action.isChecked() and not self._library.handwriting:
-            self.statusBar().showMessage("No handwriting engine installed (see README: pip install -e .[handwriting]); indexing typed text only.")
+        self._handwriting_missing = self.handwriting_action.isChecked() and not self._library.handwriting
         worker = IndexWorker(self._library, force)
         thread = QThread(self)
         worker.moveToThread(thread)
@@ -430,8 +429,14 @@ class MainWindow(QMainWindow):
         thread.start()
 
     def _handwriting_note(self) -> str:
+        """Parenthetical for indexing status messages: the engine in use,
+        or — when the toggle is on but none is installed — why ink is skipped."""
         engine = self._library.handwriting if self._library else None
-        return f" (reading handwriting with {engine})" if engine else ""
+        if engine:
+            return f" (reading handwriting with {engine})"
+        if getattr(self, "_handwriting_missing", False):
+            return " (no handwriting engine installed — typed text only; see README: pip install -e .[handwriting])"
+        return ""
 
     def _stop_indexing(self) -> None:
         """Cancel a running index and wait for its thread to finish."""
@@ -455,6 +460,8 @@ class MainWindow(QMainWindow):
         if self._library is not None and self._library.handwriting:
             read = len(self._library.recognition) - self._recognitions_before
             message += f"; handwriting: {read} pages read with {self._library.handwriting}, {len(self._library.recognition)} cached"
+        else:
+            message += self._handwriting_note()
         self.statusBar().showMessage(message)
 
     def _on_index_failed(self, message: str) -> None:

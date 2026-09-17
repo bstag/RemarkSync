@@ -203,3 +203,31 @@ def test_read_handwriting_toggle_wires_the_engine_into_indexing(qapp, backup_roo
     win2 = MainWindow()  # the choice is remembered
     assert win2.handwriting_action.isChecked()
     win2.close()
+
+
+def test_handwriting_toggle_without_an_engine_says_so(qapp, backup_root, monkeypatch):
+    """Toggling Read Handwriting on with no engine installed must say so in
+    the status bar — in the start message and again when indexing finishes —
+    not silently index typed text only."""
+    import time
+
+    import remarksync.recognize as rec
+    from remarksync.gui import MainWindow
+
+    monkeypatch.setattr(rec, "trocr_available", lambda: False)
+    monkeypatch.setattr(rec, "windows_ink_available", lambda: False)
+    monkeypatch.setattr(MainWindow, "_restore_state", lambda self: None)
+    win = MainWindow()
+    win.open_folder(backup_root)
+    win.handwriting_action.setChecked(True)
+    win.update_index()
+    assert "no handwriting engine installed" in win.statusBar().currentMessage()
+    deadline = time.monotonic() + 20
+    while win.is_indexing and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    qapp.processEvents()
+    assert "Index updated" in win.statusBar().currentMessage()
+    assert "no handwriting engine installed" in win.statusBar().currentMessage()
+    assert win._library.handwriting is None
+    win.close()
