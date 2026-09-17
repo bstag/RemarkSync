@@ -91,7 +91,7 @@ Note: "rmformat" (from the original plan) could not be found as a reMarkable pro
 
 ### Rendering essentials
 
-- Strokes are polylines: per-line `color`/`base_size`/brush type, per-point `(x, y, pressure, tilt, x_speed, y_speed)`. Render as variable-width paths (pressure → width) or fixed-width simplification.
+- Strokes are polylines: per-line `color`/`base_size`/brush type, per-point `(x, y, speed, direction, width, pressure)` — that field order is what [rmscene](https://github.com/ricklupton/rmscene)'s own `Point` dataclass declares, and it holds for v5 files too (verified 2026-09 against this project's reference backup: slot 3 tops out at 6.283 = 2π, so it is an angle, and slot 5 is bounded to [0, 1], so it is a normalised pressure). An earlier revision of this note listed the order as `(x, y, pressure, tilt, x_speed, y_speed)`, which is wrong; `rmdata.py`'s v5 adapter depends on the correct order to read per-point widths. Render as variable-width paths (width → stroke width) rather than a fixed-width simplification.
 - **Highlighter** = translucent stroke with multiply/alpha blending over the base (v6 `color_rgba`).
 - **Layers** are first-class in `.rm` — a viewer should get a layer toggle (RCU already proves it).
 - **Backgrounds**: template names from `pagedata` (grid/dots/lines) — draw programmatically or ship the official template PDFs; annotated PDFs/EPUBs use the cached base document in the UUID dir.
