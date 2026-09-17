@@ -400,16 +400,123 @@ def _point_widths(line: si.Line, tool: str) -> list[float]:
 # ---------------------------------------------------------------- v5 adapter
 
 
+# A v5 line record: pen, the pen's thickness setting, colour, point count.
+V5_LINE = struct.Struct("<idii")
+# A v5 point: the same six fields rmscene documents for v6, as float32.
+V5_POINT = struct.Struct("<6f")
+# Every line record is preceded by one int32 the classic v5 spec omits.
+# This is the "extra record" software ~2.13 added; it is what made a
+# tolerant scanner look necessary.
+V5_LINE_PREFIX = 4
+# Widths outside this range are not a pen width; fall back to the line's own.
+V5_WIDTH_RANGE = (0.15, 60.0)
+# Mean width above which a v5 stroke is treated as translucent. There is no
+# reliable pen table for this file variant -- the ids seen in real files
+# (0, 2, 5) do not line up with the classic spec, and pen 2 carries 57 px
+# strokes -- so width remains the only honest discriminator.
+V5_TRANSLUCENT_WIDTH = 8.0
+
+
+def _v5_stroke(data: bytes, offset: int, npts: int, pen: int, base_width: float, colour: int) -> Stroke:
+    """One v5 line as a Stroke, at the width stored on every point.
+
+    Each point carries (x, y, speed, direction, width, pressure) -- the
+    field order rmscene documents for v6 -- and that width is already in
+    tablet pixels, so it is used as it stands. The line's own width is only
+    the pen's thickness setting (2.0, 2.4 or 3.0 in real files) and serves
+    as the fallback.
+    """
+    low, high = V5_WIDTH_RANGE
+    if not low <= base_width <= high:  # a thickness setting we do not recognise
+        base_width = min(max(base_width, low), high)
+    points: list[tuple[float, float]] = []
+    widths: list[float] = []
+    for i in range(npts):
+        x, y, _speed, _direction, width, _pressure = V5_POINT.unpack_from(data, offset + i * V5_POINT.size)
+        points.append((x, y))
+        widths.append(width if low <= width <= high else base_width)
+    mean = sum(widths) / len(widths) if widths else base_width
+    return Stroke(
+        points=points,
+        color=PEN_COLORS.get(V5_COLORS.get(colour, "BLACK"), "#1a1a1a"),
+        width=max(0.4, min(mean, high)),
+        highlighter=mean > V5_TRANSLUCENT_WIDTH,
+        widths=[max(0.4, min(w, high)) for w in widths],
+        tool=f"V5_PEN_{pen}",
+    )
+
+
 def _decode_v5(data: bytes) -> PageModel:
     """Decode a 'version=5' .lines file (software 2.x).
 
-    These files were extended mid-generation (software ~2.13 added a
-    per-line id field and other records the classic spec lacks), so this
-    is a tolerant scanner: it walks the buffer, validates each candidate
-    line record hard (pen/width/colour/npts ranges + first point on the
-    page), and skips four bytes past anything it doesn't recognise. A
-    torn or exotic file still yields every stroke that survives. v5 points
-    are already in page coordinates.
+    The structure the header declares is read first. Every one of the 44 v5
+    pages in the reference backup parses that way and is consumed to the
+    byte, so a well-formed file never needs guesswork. A file that does not
+    match falls back to :func:`_scan_v5`.
+
+    v5 points are already in page coordinates.
+    """
+    page = _decode_v5_declared(data)
+    return page if page is not None else _scan_v5(data)
+
+
+def _decode_v5_declared(data: bytes) -> PageModel | None:
+    """Read the layers and lines the header declares.
+
+    Layout: the 43-byte magic, an int32 layer count, then per layer an
+    int32 line count followed by that many lines, each one an int32 prefix
+    then :data:`V5_LINE` then its points.
+
+    Returns ``None`` unless the structure accounts for every byte, which is
+    the signal that the framing was understood rather than merely tolerated.
+    Note the count at offset 47 belongs to the *first* layer only, so a
+    multi-layer page legitimately holds more lines than it declares there.
+    """
+    size = len(data)
+    pos = 43
+    if pos + 4 > size:
+        return None
+    layers, = struct.unpack_from("<i", data, pos)
+    pos += 4
+    if not 1 <= layers <= 16:
+        return None
+
+    low, high = V5_WIDTH_RANGE
+    page = PageModel()
+    for _ in range(layers):
+        if pos + 4 > size:
+            return None
+        count, = struct.unpack_from("<i", data, pos)
+        pos += 4
+        if not 0 <= count <= 20000:
+            return None
+        for _ in range(count):
+            if pos + V5_LINE_PREFIX + V5_LINE.size > size:
+                return None
+            pen, width, colour, npts = V5_LINE.unpack_from(data, pos + V5_LINE_PREFIX)
+            start = pos + V5_LINE_PREFIX + V5_LINE.size
+            # Only structural impossibilities disqualify the framing. An odd
+            # pen id or width is a value to sanitise, not evidence that the
+            # layout was misread -- consuming every byte is that evidence.
+            if not 0 <= npts <= 20000 or start + npts * V5_POINT.size > size:
+                return None
+            if npts:
+                page.strokes.append(_v5_stroke(data, start, npts, pen, width, colour))
+            pos = start + npts * V5_POINT.size
+    return page if pos == size else None
+
+
+def _scan_v5(data: bytes) -> PageModel:
+    """Last resort for a v5 file whose framing does not add up.
+
+    Walks the buffer, validates each candidate line record hard (pen,
+    width, colour and point-count ranges plus a first point on the page)
+    and skips four bytes past anything it does not recognise, so a torn
+    file still yields the strokes that survive.
+
+    Only reachable for damaged files: this recovers most strokes but can
+    also mistake point data for a line header, so it is no longer the
+    primary path.
     """
     page = PageModel()
     pos = 51
@@ -440,18 +547,6 @@ def _decode_v5(data: bytes) -> PageModel:
             continue
         start, pen, width, colour, npts = line
         if npts:
-            points = []
-            for i in range(npts):
-                x, y = struct.unpack_from("<2f", data, start + 20 + i * 24)
-                points.append((x, y))
-            page.strokes.append(
-                Stroke(
-                    points=points,
-                    color=PEN_COLORS.get(V5_COLORS.get(colour, "BLACK"), "#1a1a1a"),
-                    width=max(0.4, min(width, 60.0)),
-                    highlighter=width > 8.0,
-                    tool=f"V5_PEN_{pen}",
-                )
-            )
-        pos = start + 20 + npts * 24
+            page.strokes.append(_v5_stroke(data, start + V5_LINE.size, npts, pen, width, colour))
+        pos = start + V5_LINE.size + npts * V5_POINT.size
     return page

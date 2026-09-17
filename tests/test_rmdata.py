@@ -122,13 +122,48 @@ def test_decode_v5_lines_file():
     page = decode_page(blob)
     assert page.error is None
     assert len(page.strokes) == 3
-    assert page.strokes[0].width == 2.2
-    assert page.strokes[1].width == 2.0  # id record skipped, width intact
+    # widths now come from the float32 stored at each point, so they carry
+    # float32 rounding rather than the exact float the fixture wrote
+    assert page.strokes[0].width == pytest.approx(2.2)
+    assert page.strokes[1].width == pytest.approx(2.0)
     assert page.strokes[2].highlighter is True  # wide stroke = highlighter
     assert page.strokes[0].color == "#1a1a1a"
     # v5 points are already page coordinates: passed through untouched
     assert page.strokes[0].points[0] == (100.0, 150.0)
     assert page.strokes[0].points[0][1] < page.strokes[1].points[0][1] < page.strokes[2].points[0][1]
+
+
+def test_v5_uses_the_width_stored_at_every_point():
+    """A v5 point carries its own width; the line's width is only the pen's
+    thickness setting. A pressure-varying stroke must not come out uniform,
+    or v5 ink renders far lighter than the tablet draws it."""
+    from .conftest import page_rm_v5
+
+    blob = page_rm_v5(
+        [(0, 0, 2.0, [(100, 100), (200, 100), (300, 100)])],
+        point_widths=[[2.0, 5.5, 9.0]],
+    )
+    stroke = decode_page(blob).strokes[0]
+    assert stroke.widths == pytest.approx([2.0, 5.5, 9.0])
+    assert stroke.width == pytest.approx((2.0 + 5.5 + 9.0) / 3)
+    assert not stroke.uniform
+
+
+def test_v5_point_data_is_never_mistaken_for_a_line_record():
+    """Real pages carry a per-point width of 2.9629, whose bytes a
+    mis-aligned reader turns into a 29.63-wide float64 'line' of 15 points
+    pinned to y=0. Parsing the declared structure must make that impossible.
+    """
+    from .conftest import page_rm_v5
+
+    written = [(0, 0, 2.0, [(50.0 + i * 7, 300.0 + i) for i in range(40)]) for _ in range(6)]
+    blob = page_rm_v5(written, point_widths=[[2.9629] * 40 for _ in written])
+    page = decode_page(blob)
+    assert len(page.strokes) == len(written)
+    assert all(s.width == pytest.approx(2.9629) for s in page.strokes)
+    assert not any(s.highlighter for s in page.strokes)
+    # nothing pinned to the top edge, which is what the phantoms looked like
+    assert all(min(y for _, y in s.points) >= 300.0 for s in page.strokes)
 
 
 def test_v5_scanner_survives_garbage_between_lines():

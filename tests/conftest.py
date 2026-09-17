@@ -50,29 +50,36 @@ def page_rm(text: str | None = None, strokes: list[si.Line] | None = None,
     return buf.getvalue()
 
 
-def page_rm_v5(lines: list[tuple[int, int, float, list[tuple[float, float]]]]) -> bytes:
+def page_rm_v5(lines: list[tuple[int, int, float, list[tuple[float, float]]]],
+               point_widths: list[list[float]] | None = None) -> bytes:
     """Serialize a 'version=5' .lines page (software 2.x format).
 
-    Each entry is (pen, colour, width, points). Mirrors the real-device
-    layout including the per-line id records that firmware >= 2.13 added
-    before some lines, to exercise the tolerant scanner.
+    Each entry is (pen, colour, width, points), where ``width`` is the pen's
+    thickness setting. Mirrors the real-device layout: a 43-byte magic, an
+    int32 layer count, an int32 line count, then one line per record, each
+    preceded by the int32 prefix firmware >= 2.13 writes before *every*
+    line. Points carry the six float32 fields the device stores,
+    (x, y, speed, direction, width, pressure).
+
+    ``point_widths`` gives the per-point width for each line; by default
+    every point carries the line's own width, so a stroke's mean width is
+    its thickness setting.
     """
     import struct as _struct
 
     out = bytearray()
     out += b"reMarkable .lines file, version=5          "
-    out += _struct.pack("<i", 1)
     out += _struct.pack("<i", 1)  # one layer
     out += _struct.pack("<i", len(lines))  # lines in layer
     for n, (pen, colour, width, points) in enumerate(lines):
-        if n % 2 == 1:
-            out += _struct.pack("<i", 6 + n)  # extended-format id record
+        widths = point_widths[n] if point_widths is not None else [width] * len(points)
+        out += _struct.pack("<i", 15)  # the per-line prefix real files carry
         out += _struct.pack("<i", pen)
         out += _struct.pack("<d", width)
         out += _struct.pack("<i", colour)
         out += _struct.pack("<i", len(points))
-        for x, y in points:
-            out += _struct.pack("<6f", x, y, 0.0, 0.0, 30.0, 0.0)
+        for (x, y), w in zip(points, widths):
+            out += _struct.pack("<6f", x, y, 0.0, 0.0, w, 0.0)
     return bytes(out)
 
 
