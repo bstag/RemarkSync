@@ -124,6 +124,17 @@ Things to sanity-check against your own tablet backup on first use:
   fitted from the tablet's own snap-highlight rectangles on three PDFs to
   about a pixel. US Letter pages therefore come out wider than the
   screen, and the canvas grows to show them whole.
+- **The compiler was round-tripped through the tablet** on 2026-09-18
+  (software 3.27, Paper Pro): the archive uploaded through the USB web
+  interface (HTTP 201), came back from the tablet's own PDF export as three
+  pages of real text — words, ligatures, not an image — at the paper the
+  archive declares, with our pagination preserved and no paragraph split
+  across a break. Of 34 lines, **32 broke exactly where `textmetrics`
+  predicted**; one paragraph differed by a single word, on a line sitting
+  right at the wrap boundary. `python -m tests.real.compile_roundtrip` does
+  this end to end. Note the compiler always emits 1404x1872 pages, so on a
+  1620x2160 Paper Pro about 16% of each page goes unused and you get more
+  pages than you need.
 - **.rmdoc produced by `compile`** follows the software-3.x layout
   (`<uuid>.content` with formatVersion 2, `<uuid>.metadata`,
   `<uuid>/<page-uuid>.rm` with a SceneInfo block) and imports through the
