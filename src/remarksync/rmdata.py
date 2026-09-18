@@ -187,6 +187,12 @@ class PageModel:
     texts: list[TextBlock] = field(default_factory=list)
     highlights: list[GlyphHighlight] = field(default_factory=list)
     error: str | None = None
+    # The paper this page was drawn on, in tablet px, when the file says so.
+    # A Paper Pro page declares 1620x2160 where the rM2 sheet is 1404x1872,
+    # and one notebook can hold pages of each. None means the file is silent
+    # and the reader should assume the default sheet; choosing that default is
+    # the layout's business, not the decoder's.
+    paper_size: tuple[float, float] | None = None
 
     @property
     def has_content(self) -> bool:
@@ -296,9 +302,12 @@ def _decode_v6(tree) -> PageModel:
     """v6 stores x centre-relative and y from the page top, for ink and
     typed text alike (verified against the tablet's own PDF export, see
     ADR-0001); shift x so the model is in page coordinates."""
-    page = PageModel()
+    paper_size = getattr(tree.scene_info, "paper_size", None) if tree.scene_info is not None else None
+    page = PageModel(paper_size=paper_size)
     anchor_pos = _anchor_positions(tree.root_text)
-    x_shift = PAGE_WIDTH / 2
+    # x is relative to the centre of *this page's* paper, so a Paper Pro page
+    # shifts by 810, not the 702 of the smaller sheet.
+    x_shift = (paper_size[0] if paper_size else PAGE_WIDTH) / 2
 
     def visit(item: si.SceneItem, ax: float, ay: float, visible: bool) -> None:
         if isinstance(item, si.Group):

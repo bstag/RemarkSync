@@ -94,8 +94,17 @@ def lay_out(
     underlay and only on the first page of an endless canvas. ``base_size``
     is the base-document page size in PDF points; giving it makes that page
     the paper and turns the underlay on. The input page is not modified.
+
+    Without a base document the paper is the sheet the page says it was drawn
+    on (:attr:`PageModel.paper_size`), falling back to the tablet's 1404x1872
+    for pages that declare nothing. A Paper Pro page is 1620x2160, and one
+    notebook can hold pages of either, so this cannot be a constant.
     """
-    paper: Rect = base_page_rect(base_size) if base_size is not None else (0.0, 0.0, PAGE_WIDTH, PAGE_HEIGHT)
+    if base_size is not None:
+        paper: Rect = base_page_rect(base_size)
+    else:
+        sheet = page.paper_size or (PAGE_WIDTH, PAGE_HEIGHT)
+        paper = (0.0, 0.0, float(sheet[0]), float(sheet[1]))
     px, py, pw, ph = paper
 
     xs, ys = _extent(page)

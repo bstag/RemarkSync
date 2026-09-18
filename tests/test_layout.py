@@ -165,3 +165,32 @@ def test_highlights_are_shifted_with_the_base_page():
     frame = lay_out(PageModel(highlights=[hl]), base_size=(432, 576))
     px = base_page_rect((432, 576))[0]
     assert frame.page.highlights[0].rectangles[0] == pytest.approx((945 - px, 1599, 103, 34))
+
+
+def test_a_page_is_laid_out_on_the_paper_it_declares():
+    """A page carries its own paper size. A Paper Pro sheet is 1620x2160, and
+    real libraries mix both -- one notebook in the reference backup has pages
+    of each -- so the paper cannot be a module-wide constant. Verified against
+    the tablet's own PDF export: the exported page box equals the paper the
+    page declares, on every page checked.
+    """
+    page = PageModel(strokes=[stroke((100, 100), (200, 200))], paper_size=(1620, 2160))
+    frame = lay_out(page)
+    assert frame.paper == (0.0, 0.0, 1620.0, 2160.0)
+    assert frame.canvas_size == (1620.0, 2160.0)
+
+
+def test_a_page_that_declares_no_paper_uses_the_tablet_default():
+    """Older pages declare nothing; they are the 1404x1872 sheet."""
+    frame = lay_out(PageModel(strokes=[stroke((100, 100), (200, 200))]))
+    assert frame.paper == (0.0, 0.0, W, H)
+    assert frame.canvas_size == (W, H)
+
+
+def test_a_declared_paper_still_grows_for_overflowing_content():
+    """The bigger sheet is the paper, not a cap: content past its edge still
+    grows the canvas the same way."""
+    page = PageModel(strokes=[stroke((100, 100), (1700, 200))], paper_size=(1620, 2160))
+    frame = lay_out(page)
+    assert frame.paper == (0.0, 0.0, 1620.0, 2160.0)
+    assert frame.canvas_size[0] == 1700.0

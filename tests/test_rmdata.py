@@ -235,3 +235,26 @@ def test_v5_keeps_wide_strokes_that_are_not_eraser_wide():
     page = decode_page(blob)
     assert len(page.strokes) == 1
     assert page.strokes[0].highlighter is True  # wide but drawable
+
+
+def test_decoder_reads_the_paper_size_a_v6_page_declares():
+    """SceneInfo carries the page's paper size. Without it, a Paper Pro page
+    (1620x2160) is laid out on the 1404x1872 sheet and everything computed
+    from the paper -- its rect, the dividers, where a base PDF is centred --
+    is computed against the wrong sheet.
+    """
+    from .conftest import page_rm
+
+    page = decode_page(page_rm(text="on a bigger sheet", paper_size=(1620, 2160)))
+    assert page.error is None
+    assert page.paper_size == (1620, 2160)
+
+
+def test_a_page_without_scene_info_declares_no_paper_size():
+    """Older pages carry no SceneInfo; the default belongs to the layout, not
+    to the decoder, so the model says None rather than guessing."""
+    from .conftest import page_rm
+
+    page = decode_page(page_rm(text="plain page"))
+    assert page.error is None
+    assert page.paper_size is None

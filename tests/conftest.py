@@ -14,14 +14,35 @@ import pytest
 from rmscene import (CrdtId, SceneGlyphItemBlock, SceneLineItemBlock,
                      simple_text_document, write_blocks)
 from rmscene.crdt_sequence import END_MARKER, CrdtSequenceItem
+from rmscene.tagged_block_common import LwwValue
+from rmscene.scene_stream import SceneInfo
 from rmscene import scene_items as si
 
 
+def scene_info(paper_size: tuple[int, int]) -> SceneInfo:
+    """A SceneInfo block declaring the page's paper size.
+
+    Real v6 pages carry one; it is how a page says it is a Paper Pro sheet
+    (1620x2160) rather than the 1404x1872 default. All three optional fields
+    are written because the reader walks the tags in order.
+    """
+    stamp = CrdtId(1, 1)
+    return SceneInfo(
+        current_layer=LwwValue(stamp, CrdtId(0, 11)),
+        background_visible=LwwValue(stamp, True),
+        root_document_visible=LwwValue(stamp, True),
+        paper_size=paper_size,
+    )
+
+
 def page_rm(text: str | None = None, strokes: list[si.Line] | None = None,
-            glyphs: list[si.GlyphRange] | None = None) -> bytes:
+            glyphs: list[si.GlyphRange] | None = None,
+            paper_size: tuple[int, int] | None = None) -> bytes:
     """Serialize a .rm page with optional root text, stroke lines and
     snap text highlights."""
     blocks = list(simple_text_document(text or ""))
+    if paper_size is not None:
+        blocks.insert(0, scene_info(paper_size))
     prev_id = None
     for i, line in enumerate(strokes or []):
         item_id = CrdtId(1, 100 + i)

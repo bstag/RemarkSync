@@ -4,21 +4,24 @@ Opt-in: needs a real backup and the desktop app's store (see conftest).
 
 Every threshold here was measured, not guessed —
 ``python -m tests.real.characterize parity`` prints the distributions these
-come from. Observed on a 91-page corpus (2026-09):
+come from. Observed on a 92-page corpus (2026-09):
 
-    v6   40 inked pages   ink ratio median 1.040   centroid median  7.9 px
-    v5   16 inked pages   ink ratio median 1.089   centroid median 26.8 px
+    v6   40 inked pages   ink ratio median 1.030   centroid median 5.4 px
+    v5   16 inked pages   ink ratio median 1.031   centroid median 5.4 px
 
-v5 read 0.387 / 38.1 px before the decoder parsed the declared structure
-and used per-point widths; both of those are now asserted rather than
-excused.
+Where those numbers came from, worst first, so the bounds are not mistaken
+for something that was always true:
 
-Known and not yet explained, so deliberately outside these bounds:
+* v5 read 0.387 / 38.1 px before the decoder parsed the structure the file
+  declares and used the width stored at each point;
+* the v5 tail reached 3.02x while eraser strokes were drawn as ink;
+* both formats sat near 1.04 / 8 px while every page was laid out on the
+  1404x1872 sheet, including the Paper Pro pages that declare 1620x2160.
 
-* a v5 overdraw tail — worst pages run 1.5x to 3.0x the device's ink, all of
-  them pages carrying strokes whose stored per-point width is 9.5 px or
-  more, so the wide-stroke reading is probably still wrong for some pen;
-* a v6 tail around 1.37 on two stroke-heavy pages.
+Still outside these bounds and unexplained: two pages of one notebook that
+was drawn on mid-session, where the desktop app's stored render may predate
+the .rm it is being compared against. A byte-identical .rm in both stores
+does not prove the thumbnail was rendered from that version.
 
 Typed-text pages are excluded throughout: Qt ships no fonts, so text paints
 nothing on an offscreen run and would masquerade as a decode failure.
@@ -37,9 +40,10 @@ from .oracle import build_frame, compare, load_thumbnail, render_paper
 
 # One tablet pixel is 1404/384 thumbnail pixels, so anything under a few
 # tens of tablet px is at the oracle's resolution limit.
-V6_CENTROID_LIMIT_PX = 25.0
-V6_INK_RATIO_RANGE = (0.85, 1.20)
-V5_INK_RATIO_RANGE = (0.85, 1.20)
+V6_CENTROID_LIMIT_PX = 12.0
+V6_INK_RATIO_RANGE = (0.90, 1.15)
+V5_INK_RATIO_RANGE = (0.90, 1.15)
+V5_CENTROID_LIMIT_PX = 12.0
 
 
 @pytest.fixture(scope="session")
@@ -95,14 +99,25 @@ def test_v6_ink_lands_where_the_device_puts_it(measured):
 
 
 def test_v5_ink_mass_matches_the_device(measured):
-    """Guards the per-point width fix: v5 ink used to be 0.387 of the
-    device's because only x and y were read from each point."""
+    """Guards the per-point width fix and the eraser filter: v5 ink used to be
+    0.387 of the device's because only x and y were read from each point, and
+    later ran to 3.02x on pages where erase strokes were painted as ink."""
     subset = _subset(measured, "v5")
     if not subset:
         pytest.skip("no v5 pages in this corpus")
     median = statistics.median(m.ink_ratio for _, m in subset)
     low, high = V5_INK_RATIO_RANGE
     assert low <= median <= high, f"v5 ink ratio median {median:.3f} outside {V5_INK_RATIO_RANGE}"
+
+
+def test_v5_ink_lands_where_the_device_puts_it(measured):
+    """v5 placement was 38 px out while phantom strokes pinned to the page
+    edge dragged the centre of mass upwards."""
+    subset = [(p, m) for p, m in _subset(measured, "v5") if m.ink_ours]
+    if not subset:
+        pytest.skip("no v5 pages in this corpus")
+    median = statistics.median(m.centroid_delta_px for _, m in subset)
+    assert median <= V5_CENTROID_LIMIT_PX, f"v5 ink centroid off by {median:.1f} tablet px"
 
 
 def test_v5_has_no_phantom_edge_strokes(measured):
