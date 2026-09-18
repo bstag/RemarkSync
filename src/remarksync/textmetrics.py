@@ -184,9 +184,11 @@ def text_width(text: str, s: Style) -> float:
     return sum(table.get(c, default) for c in text) * s.size
 
 
-def line_width(s: Style) -> float:
-    """Room for text on one line of this style."""
-    return TEXT_WIDTH - s.indent
+def line_width(s: Style, box_width: float = TEXT_WIDTH) -> float:
+    """Room for text on one line of this style, inside a box ``box_width``
+    wide. Blocks are a fixed width but not all the same one: real files carry
+    1152 and 936, each centred on the page."""
+    return box_width - s.indent
 
 
 def chars_per_line(s: Style) -> int:
@@ -200,10 +202,10 @@ def uses_fallback_font(text: str) -> bool:
     return any(0x2190 <= ord(c) <= 0x25FF for c in text)
 
 
-def wrap(text: str, s: Style) -> list[str]:
+def wrap(text: str, s: Style, box_width: float = TEXT_WIDTH) -> list[str]:
     """Break on spaces the way the tablet does: never inside a word, by the
     measured glyph widths, keeping a line's leading whitespace."""
-    limit = line_width(s)
+    limit = line_width(s, box_width)
     stripped = text.lstrip(" ")
     lead = text[: len(text) - len(stripped)]
     out: list[str] = []
@@ -236,8 +238,10 @@ class TextLine:
     chars: int  # characters of the paragraph consumed up to the end of this line
 
 
-def lay_out_lines(paragraphs: Iterable[tuple[str, str]]) -> list[TextLine]:
-    """Every line of a block, with baselines relative to the block's pos_y."""
+def lay_out_lines(paragraphs: Iterable[tuple[str, str]],
+                  box_width: float = TEXT_WIDTH) -> list[TextLine]:
+    """Every line of a block ``box_width`` wide, with baselines relative to
+    the block's pos_y."""
     lines: list[TextLine] = []
     y = FIRST_BASELINE
     previous: Style | None = None
@@ -247,7 +251,7 @@ def lay_out_lines(paragraphs: Iterable[tuple[str, str]]) -> list[TextLine]:
         if previous is not None:
             y += pitch(previous, s)
         consumed = 0
-        for i, piece in enumerate(wrap(text, s)):
+        for i, piece in enumerate(wrap(text, s, box_width)):
             if i:
                 y += continuation(s)
             if previous_fallback and lines:
@@ -259,9 +263,10 @@ def lay_out_lines(paragraphs: Iterable[tuple[str, str]]) -> list[TextLine]:
     return lines
 
 
-def block_height(paragraphs: Iterable[tuple[str, str]]) -> float:
+def block_height(paragraphs: Iterable[tuple[str, str]],
+                 box_width: float = TEXT_WIDTH) -> float:
     """From the block's pos_y to the bottom of its last line."""
-    lines = lay_out_lines(paragraphs)
+    lines = lay_out_lines(paragraphs, box_width)
     if not lines:
         return FIRST_BASELINE
     last = lines[-1]

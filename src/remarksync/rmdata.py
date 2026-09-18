@@ -27,7 +27,7 @@ from rmscene import scene_items as si
 from rmscene.text import TextDocument
 
 from . import rmformat
-from .textmetrics import TextLine, block_height, lay_out_lines, style_name
+from .textmetrics import TEXT_WIDTH, TextLine, block_height, lay_out_lines, style_name
 
 rmformat.install()  # read the paragraph-format fields rmscene skips (subheading vs bold)
 
@@ -262,7 +262,9 @@ def _anchor_positions(root_text) -> dict:
     try:
         doc = TextDocument.from_scene_item(root_text)
         paras = _paragraphs(doc)
-        lines = lay_out_lines(paras)
+        # anchored ink is pinned to these baselines, so they have to be the
+        # baselines of *this* block's width, not of the usual one
+        lines = lay_out_lines(paras, getattr(root_text, "width", None) or TEXT_WIDTH)
         offset = len(paras) - len(doc.contents)  # 1 when a hidden first line was restored
         by_para: dict[int, list[TextLine]] = {}
         for ln in lines:
@@ -364,8 +366,8 @@ def _decode_v6(tree) -> PageModel:
             doc = TextDocument.from_scene_item(t)
             block.paragraphs = _paragraphs(doc)
             block.text = "\n".join(text for _, text in block.paragraphs)
-            block.lines = lay_out_lines(block.paragraphs)
-            block.height = block_height(block.paragraphs)
+            block.lines = lay_out_lines(block.paragraphs, block.width)
+            block.height = block_height(block.paragraphs, block.width)
         except Exception as exc:
             log.debug("styled text extraction failed: %s", exc)
             block.height = 70.0 * max(1, block.text.count("\n") + 1)
@@ -578,3 +580,4 @@ def _scan_v5(data: bytes) -> PageModel:
                 page.strokes.append(stroke)
         pos = start + V5_LINE.size + npts * V5_POINT.size
     return page
+

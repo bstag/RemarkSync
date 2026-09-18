@@ -98,3 +98,38 @@ def test_block_height_and_page_budget():
     assert lines_per_page() == 22
     assert paragraph_advance("PLAIN", "short") == pytest.approx(69.3, abs=0.1)
     assert paragraph_advance("HEADING", "short") > paragraph_advance("PLAIN", "short")
+
+
+def test_wrapping_follows_the_block_width_not_the_usual_one():
+    """A typed block is a fixed width, but not always the same fixed width.
+    Real files carry 1152 (34 blocks) and 936 (6 blocks), each centred on the
+    page. Wrapping against the common value would fit too much on a line in a
+    narrower block, giving it too few lines, too short a height, and baselines
+    the device does not use -- and anchored ink is pinned to those baselines.
+    """
+    from remarksync.textmetrics import TEXT_WIDTH, lay_out_lines, wrap
+
+    plain = style("PLAIN")
+    # enough words that the difference cannot round away: at 1152 this is 8
+    # lines and at 936 it is 10, where 40 words would be 4 lines either way
+    text = " ".join(["alpha"] * 100)
+
+    wide = wrap(text, plain, TEXT_WIDTH)
+    narrow = wrap(text, plain, 936.0)
+    assert len(narrow) > len(wide), "a narrower block must wrap onto more lines"
+
+    # and the default is still the usual width, so existing callers are unmoved
+    assert wrap(text, plain) == wide
+
+    lines_wide = lay_out_lines([("PLAIN", text)], TEXT_WIDTH)
+    lines_narrow = lay_out_lines([("PLAIN", text)], 936.0)
+    assert len(lines_narrow) > len(lines_wide)
+    assert lines_narrow[-1].baseline > lines_wide[-1].baseline
+
+
+def test_a_narrow_block_is_taller_than_a_wide_one():
+    """Block height follows from the wrap, so it has to follow the width too."""
+    from remarksync.textmetrics import TEXT_WIDTH, block_height
+
+    paragraphs = [("PLAIN", " ".join(["alpha"] * 100))]
+    assert block_height(paragraphs, 936.0) > block_height(paragraphs, TEXT_WIDTH)
