@@ -275,3 +275,13 @@ def test_punctuation_is_narrow_where_the_fallback_was_average():
     # a quoted sentence in a heading: 10 marks that were each 0.52 before
     quoted = '"It is," she said, "quite so."'
     assert text_width(quoted, heading) < 0.80 * DEFAULT_ADVANCE_SERIF * heading.size * len(quoted)
+
+
+def test_glyphs_start_four_pixels_inside_the_block():
+    """Measured from the first glyph of every line the tablet drew, on both
+    papers, all three column widths and both faces: pos_x + 4.0. The other four
+    of the eight-pixel inset are at the right-hand end, where the wrap stops."""
+    from remarksync.textmetrics import TEXT_LEFT_PAD, TEXT_WRAP_INSET
+
+    assert TEXT_LEFT_PAD == 4.0
+    assert TEXT_LEFT_PAD * 2 == TEXT_WRAP_INSET

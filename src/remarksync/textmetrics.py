@@ -52,8 +52,13 @@ TEXT_POS_X = -TEXT_WIDTH / 2  # blocks are centred, so this follows the width
 # software 3.27. Each is centred, so the margin follows from the sheet: on a
 # 1620 Paper Pro page they leave 440, 342 and 234 a side.
 TEXT_WIDTHS = (740.0, 936.0, 1152.0)
-# Glyphs start this far right of the box's pos_x.
-TEXT_LEFT_PAD = 15.0
+# Glyphs start this far right of the box's pos_x. Measured 2026-09-18 from the
+# first glyph of every line of the tablet's own exports: 4.0 px at all three
+# column widths, on both the 1404 and 1620 papers, in both faces. It was 15.0
+# from an early estimate, which drew typed text 11 px right of where the device
+# puts it. The other 4 px of the box are at the right-hand end, where they show
+# up as the wrap inset below.
+TEXT_LEFT_PAD = 4.0
 # Text does not get the whole box: the device breaks a line 8 px short of the
 # declared width. Measured 2026-09-18 from where it broke runs of one repeated
 # character, whose advances are known: at 1152 the limit lies in (1143.4,
