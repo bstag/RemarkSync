@@ -101,10 +101,25 @@ drawn at the width stored on each point rather than the pen's thickness
 setting, which had them rendering at 0.39 of the device's ink; and PDFs with
 empty page lists show their pages from the base PDF itself.
 
-Known gaps, measured rather than assumed: a handful of v5 pages still draw
-1.5x to 3x the device's ink, all of them carrying wide strokes, and two
-stroke-heavy v6 pages draw about 1.37x. Templates outside the five patterns
-below are not drawn at all.
+Known gaps, measured rather than assumed (2026-09-18, 57 inked pages): ink
+mass is within 15% of the device's on every page but one — v5 spans 1.00 to
+1.18 and v6 0.99 to 1.15, both with a median of 1.03 — and ink lands a median
+5.4 px from where the device puts it.
+
+What is left is not ink mass but framing, on three pages of the corpus whose
+ink starts *above* the paper top. The tablet's rule there turns out to be
+conditional, and we only have half of it: a page whose content stays within
+the paper height is exported at exactly paper height with the ink above the
+top clipped (Quick sheets p3, ink from y = -84), which is what the layout
+does — but a page that *also* runs past the bottom is exported taller and
+keeps that ink, which the layout does not. Its own export of one such page
+carries a heading at y = -195 that we drop. Those pages are the parity
+outliers (ink centroid 143 to 235 px out, almost no ink in common); the
+remaining 53 sit between 0.75 and 0.95 overlap.
+
+Templates outside the five patterns below are not drawn at all, and the ruled
+ones do not distinguish their spacings — "P Lines medium" and "P Lines small"
+draw the same rule.
 
 Things to sanity-check against your own tablet backup on first use:
 

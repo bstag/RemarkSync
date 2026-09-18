@@ -95,6 +95,27 @@ def test_side_overflow_shifts_paper_right_and_adds_dividers():
 # clips at the top, which its own PDF export confirms -- a page whose ink
 # reaches y = -83.7 still exports at exactly paper height. The behaviour is
 # now covered by test_the_canvas_never_grows_above_the_paper_top.
+#
+# That is only half the rule, found 2026-09-18 by exporting four more pages
+# whose ink starts above the paper top. Clipping is what a page does when its
+# content stays inside the paper height, as that -83.7 one did. A page that
+# also runs past the bottom keeps the ink above instead, and exports taller
+# than its content below would need:
+#
+#     Quick sheets p1  ink [ 145, 1177]  no overflow    exports 1873 = paper
+#     Quick sheets p3  ink [ -84,   41]  no overflow    exports 1873 = paper
+#     Quick sheets p5  ink [  28, 2414]  overflows      exports 2462, ours 2461
+#     Quick sheets p2  ink [-224, 2993]  overflows      exports 3077, ours 3040
+#     Quick sheets p4  ink [ -97, 3586]  overflows      exports 3928, ours 3633
+#     '2023' p1        ink [-195, 2317]  overflows      exports 2661, ours 2364
+#
+# The three we get right are the three with no ink above the paper. The others
+# run 37 to 298 px short, and the export of '2023' p1 visibly carries a heading
+# at y = -195 that we drop; those pages are the parity outliers. What the extra
+# height is made of is not yet fitted, so the rule is recorded rather than
+# implemented -- growing upward by the overflow alone still leaves 2023 p1
+# 55 px short and does not improve the parity, the thumbnail being cropped to
+# the paper either way.
 
 
 def test_highlights_are_shifted_with_the_ink():
