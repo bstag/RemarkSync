@@ -47,7 +47,6 @@ def test_main_window_opens_library(qapp, backup_root, tmp_path, monkeypatch):
     assert all(c.decoded for c in win._canvases)
 
     # force a render pass of the first page to catch painting errors
-    from PySide6.QtGui import QPixmap
 
     pixmap = win._canvases[0].grab()
     assert not pixmap.isNull()
@@ -65,7 +64,6 @@ def _wait_for_pages(qapp, win, seconds=20):
 
 
 def test_pages_decode_on_a_worker_and_fill_placeholders(qapp, backup_root, monkeypatch):
-    from remarksync.backup import DocItem
     from remarksync.gui import MainWindow
 
     monkeypatch.setattr(MainWindow, "_restore_state", lambda self: None)

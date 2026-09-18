@@ -132,7 +132,6 @@ def test_compiled_page_carries_scene_info():
 
 
 def test_compiled_pages_roundtrip():
-    from rmscene import read_tree
     import io
 
     blob = build_rmdoc("T", ["round trip works"])
@@ -163,7 +162,6 @@ def test_subheading_format_entry_matches_the_device_bytes():
     """The tablet stores Subheading as style 3 plus two extra fields; Bold
     is the bare code. rmscene skips the fields, so RemarkSync reads and
     writes them itself (rmformat)."""
-    import io
     import struct
 
     from remarksync.mdcompile import page_rm_bytes

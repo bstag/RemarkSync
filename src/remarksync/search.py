@@ -39,7 +39,7 @@ from typing import Callable, Iterable
 
 from .backup import DocItem
 from .recognize import PageSource, conversion_signature
-from .rmdata import PageModel, decode_page, page_text
+from .rmdata import decode_page, page_text
 
 log = logging.getLogger(__name__)
 

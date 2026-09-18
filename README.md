@@ -212,8 +212,14 @@ with `--prune` it also **deletes** local documents the tablet no longer has.
 ## Development
 
 ```bash
-.venv\Scripts\python -m pytest tests/ -q
+.venv\Scripts\python -m pytest -q            # the synthetic suite
+.venv\Scripts\python -m ruff check src tests  # dead imports, unused locals, undefined names
 ```
+
+Ruff runs Pyflakes rules only (`select = ["F"]`). That is deliberate: it
+reports what is actually dead or broken and never argues about style, so it
+stays worth reading. Before it existed, seven unreachable symbols had
+accumulated unnoticed.
 
 103 tests (2026-09) cover the scan → decode → lay out → search → compile
 chain, including authoring `.rm` fixtures with rmscene's writer, every
@@ -234,6 +240,22 @@ so `tests/real` pairs those to the same pages in a backup and asserts our
 ink lands in the same place with the same weight. It is read-only, and it
 skips unless both variables are set. `python -m tests.real.characterize
 parity` prints the measured distributions the thresholds come from.
+
+A second oracle compares against PDFs the tablet exports over its USB web
+interface, which unlike the thumbnails reveal the size of the canvas:
+
+```bash
+.venv\Scripts\python -m tests.real.device_pdf freshness   # is the backup still current?
+.venv\Scripts\python -m tests.real.device_pdf fetch       # read-only GET per document
+```
+
+**Run the real suites after any change to `rmdata.py`, `layout.py`,
+`textmetrics.py` or `viewer.py`.** The synthetic tests cannot catch format
+mistakes, because their fixtures encode what we already believe: two bugs
+lived in this codebase for its whole life — v5 erase strokes painted over
+handwriting, and every Paper Pro page laid out on the 1404x1872 sheet — with
+the whole synthetic suite passing. The device is the only arbiter that can
+disagree with us.
 
 Architecture decisions live in `docs/adr/`.
 

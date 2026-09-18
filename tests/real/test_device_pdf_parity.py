@@ -36,7 +36,7 @@ import pytest
 
 pymupdf = pytest.importorskip("pymupdf")
 
-from remarksync.layout import GROWTH_MARGIN, PDF_SCALE, lay_out  # noqa: E402
+from remarksync.layout import PDF_SCALE, lay_out  # noqa: E402
 from remarksync.rmdata import decode_page  # noqa: E402
 
 from .device_pdf import CACHE, documents  # noqa: E402

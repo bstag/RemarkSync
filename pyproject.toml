@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "ruff>=0.16"]
 # local handwriting recognition (TrOCR); install PyTorch with CUDA first from
 # https://download.pytorch.org/whl/cu124 for GPU speed
 handwriting = ["torch", "torchvision", "transformers<5", "pillow", "sentencepiece", "tiktoken", "protobuf"]
@@ -31,3 +31,17 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["real: needs a real backup and the desktop app's store (see tests/real/conftest.py)"]
+
+[tool.ruff]
+# Long lines are the house style here; prose in docstrings carries the
+# reasoning and wrapping it would hurt more than help.
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# Pyflakes only, deliberately. It catches the things that silently accumulate
+# and that nothing else was catching: unused imports, unused locals, names
+# that do not exist. Style rules are left off so the linter never argues with
+# the existing code, only reports what is actually dead or broken.
+select = ["F"]
