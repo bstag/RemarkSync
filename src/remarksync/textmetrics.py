@@ -145,12 +145,30 @@ ADVANCE_SANS: dict[str, float] = {
     'o': 0.568, 'p': 0.592, 'q': 0.592, 'r': 0.360, 's': 0.498, 't': 0.361,
     'u': 0.580, 'v': 0.502, 'w': 0.765, 'x': 0.499, 'y': 0.512, '—': 0.922,
     'ﬁ': 0.592,
+    # Added 2026-09-18 by tests/real/advances.py: a paragraph of each missing
+    # character was compiled, put on the tablet, and its advance read off the
+    # width of the lines the device drew. The 'g' already here served as the
+    # control and came back within 1.1%.
+    '0': 0.610, '3': 0.572, '4': 0.576, '6': 0.587, '7': 0.524, '8': 0.596,
+    '9': 0.587, 'G': 0.725, 'H': 0.726, 'I': 0.272, 'J': 0.484, 'K': 0.639,
+    'O': 0.749, 'V': 0.656, 'X': 0.627, 'Y': 0.594, 'Z': 0.582, 'j': 0.249,
+    'z': 0.454,
 }
 ADVANCE_SERIF: dict[str, float] = {
     ' ': 0.235, 'H': 0.727, 'R': 0.646, 'S': 0.567, 'T': 0.639, 'a': 0.521,
     'd': 0.605, 'e': 0.507, 'g': 0.528, 'h': 0.584, 'i': 0.247, 'k': 0.538,
     'l': 0.247, 'm': 0.877, 'n': 0.584, 'o': 0.581, 'p': 0.604, 'r': 0.361,
     's': 0.456, 't': 0.333, 'w': 0.748, 'x': 0.483, 'y': 0.501, 'z': 0.478,
+    # Same measurement, same day, control within 0.4%. 'f' could not be read
+    # from a run of its own -- the device sets 'ff' as one ligature glyph -- so
+    # it was measured paired with 'x' and the known advance subtracted.
+    '0': 0.577, '1': 0.322, '2': 0.514, '3': 0.513, '4': 0.567, '5': 0.511,
+    '6': 0.556, '7': 0.472, '8': 0.554, '9': 0.556, 'A': 0.674, 'B': 0.617,
+    'C': 0.675, 'D': 0.708, 'E': 0.574, 'F': 0.546, 'G': 0.715, 'I': 0.269,
+    'J': 0.269, 'K': 0.678, 'L': 0.560, 'M': 0.905, 'N': 0.728, 'O': 0.781,
+    'P': 0.588, 'Q': 0.781, 'U': 0.702, 'V': 0.674, 'W': 1.004, 'X': 0.646,
+    'Y': 0.605, 'Z': 0.617, 'b': 0.605, 'c': 0.488, 'f': 0.355, 'j': 0.248,
+    'q': 0.595, 'u': 0.569, 'v': 0.505,
 }
 DEFAULT_ADVANCE_SANS = 0.54
 DEFAULT_ADVANCE_SERIF = 0.52
