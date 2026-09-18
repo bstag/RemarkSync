@@ -1,3 +1,5 @@
+import pytest
+
 from remarksync.backup import (TEMPLATE_DOTS, TEMPLATE_RULED, iter_docs,
                                 open_rmdoc, scan_root)
 
@@ -70,3 +72,39 @@ def test_open_rmdoc_roundtrip(backup_root, tmp_path):
     assert doc.file_type == "notebook"
     assert len(doc.pages) >= 1
     assert all(p.rm_path is not None for p in doc.pages)
+
+
+def test_open_rmdoc_refuses_members_that_escape_the_extraction_directory(tmp_path):
+    """A .rmdoc is just a zip, and a zip can name ``../`` in its entries. pull.py
+    already refuses tar members that would land outside the directory it is
+    filling; the same threat arrives through an archive someone was sent, so it
+    gets the same answer rather than a different one.
+    """
+    import zipfile
+
+    from remarksync.backup import open_rmdoc
+
+    archive = tmp_path / "evil.rmdoc"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("doc.metadata", '{"visibleName": "looks ordinary"}')
+        zf.writestr("../escaped.txt", "should never be written")
+
+    with pytest.raises(ValueError, match="outside"):
+        open_rmdoc(archive, extract_dir=tmp_path / "into")
+
+    assert not (tmp_path / "escaped.txt").exists()
+
+
+def test_open_rmdoc_accepts_an_ordinary_archive(tmp_path):
+    """The guard must not reject archives that are merely nested."""
+    import zipfile
+
+    from remarksync.backup import open_rmdoc
+
+    archive = tmp_path / "fine.rmdoc"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("wrapper/doc.metadata", '{"visibleName": "Notes"}')
+        zf.writestr("wrapper/doc.content", '{"fileType": "notebook", "pages": ["0"]}')
+
+    doc = open_rmdoc(archive, extract_dir=tmp_path / "into")
+    assert doc.name == "Notes"

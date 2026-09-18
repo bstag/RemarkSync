@@ -28,6 +28,7 @@ import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterable
 
 log = logging.getLogger(__name__)
 
@@ -247,6 +248,23 @@ def iter_docs(items: list):
             yield from iter_docs(item.children)
 
 
+def safe_extract_names(names: Iterable[str], into: Path) -> None:
+    """Raise unless every archive member would land inside ``into``.
+
+    An archive is data from somewhere else, and a member named ``../`` or with
+    an absolute path writes wherever it likes. Both extraction paths in this
+    project check this: the zip of a ``.rmdoc`` someone sent, and the tar
+    :mod:`remarksync.pull` streams off the tablet.
+
+    Checked before anything is written, so a refusal leaves nothing behind.
+    """
+    root = Path(into).resolve()
+    for name in names:
+        target = (root / name).resolve()
+        if target != root and root not in target.parents:
+            raise ValueError(f"refusing to extract {name!r} outside {root}")
+
+
 def open_rmdoc(path: Path, extract_dir: Path | None = None) -> DocItem:
     """Extract a .rmdoc archive and parse it into a single DocItem."""
     path = Path(path)
@@ -256,6 +274,7 @@ def open_rmdoc(path: Path, extract_dir: Path | None = None) -> DocItem:
     tmp.mkdir(parents=True, exist_ok=True)
 
     with zipfile.ZipFile(path) as zf:
+        safe_extract_names(zf.namelist(), tmp)
         zf.extractall(tmp)
 
     # archives may store entries at top level or under a single wrapper dir

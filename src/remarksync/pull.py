@@ -35,6 +35,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol
 
+from .backup import safe_extract_names
+
 log = logging.getLogger(__name__)
 
 DEFAULT_HOST = "root@10.11.99.1"
@@ -248,9 +250,5 @@ def _move_document(src: Path, dest: Path, uuid: str) -> None:
 
 def _safe_extract(tar: tarfile.TarFile, into: Path) -> None:
     """Extract, refusing paths that would escape ``into``."""
-    into = into.resolve()
-    for member in tar.getmembers():
-        target = (into / member.name).resolve()
-        if into not in target.parents and target != into:
-            raise RuntimeError(f"refusing to extract {member.name!r} outside {into}")
+    safe_extract_names([m.name for m in tar.getmembers()], into)
     tar.extractall(into)
