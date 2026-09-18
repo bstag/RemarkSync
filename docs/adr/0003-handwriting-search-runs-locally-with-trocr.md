@@ -39,6 +39,15 @@ read once and a different engine never reuses a stale reading. Runner-up
 readings, when enabled, are appended as an "alternatives" line so a
 search matches them too.
 
+**Amended 2026-09-17:** runner-up readings shipped switched off, so the 83%
+above describes a path no user can reach. `TrOCRModel` defaults to
+`beams=1, alternatives=0` and `trocr_model()` takes no arguments, so nothing
+in the CLI or the window can turn beams on; the alternatives code is
+exercised only by tests. Recall as shipped is the 80% single-beam figure.
+Enabling beams costs generation time per line and has not been measured
+end-to-end, so it stays off until someone wires a flag through and re-times
+it.
+
 The engine is a seam, not a special case: `recognize.handwriting_extractor`
 picks TrOCR when PyTorch and transformers are importable, otherwise the
 Windows recogniser, and `--engine` names one explicitly. Both are
@@ -52,7 +61,10 @@ machine-learning dependencies.
   hours the first time and only changed pages afterwards.
 * Recall is 80%, not 100%: a search can miss a handwritten word. The
   tablet's own conversion of a page ("convert to text, add as new page")
-  is indexed for free and is the fix for pages that matter.
+  is indexed for free and is the fix for pages that matter. A conversion
+  shared from the device lands beside the document without changing its
+  metadata, and the index notices that on its own (`search.py` keys a
+  document on its conversions as well as its timestamp).
 * The line cutter assumes roughly horizontal writing. Drawings, tables and
   sideways notes produce lines that read as noise; struck-through text is
   read as whatever the strokes look like.

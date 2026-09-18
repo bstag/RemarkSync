@@ -34,6 +34,15 @@ CLI:
 .venv\Scripts\python -m remarksync compile notes.md notes.rmdoc     # Markdown → .rmdoc
 ```
 
+Flags worth knowing: `pull --dry-run` reports what would be fetched without
+writing anything, `--full` re-copies every document and `--prune` deletes
+local documents the tablet no longer has; `index --rebuild` re-indexes from
+scratch and `--engine` picks the handwriting engine; `compile --title` names
+the notebook the tablet shows (it defaults to the Markdown file's name).
+
+In the window, F5 rescans the open library and Ctrl+plus / Ctrl+minus zoom
+the page view.
+
 ## First-run flow
 
 1. **Get a backup.** On the tablet enable *Settings → Storage → USB web
@@ -50,13 +59,17 @@ CLI:
 3. **Update Search Index** (Ctrl+I) once, then search from the toolbar
    (Enter). Indexing runs in the background; click the action again to
    cancel. Later updates only touch documents that changed since the last
-   run (a 56-document, 3,100-page library indexes in about 8 seconds the
-   first time and skips unchanged documents instantly afterwards).
-   **Rebuild Search Index** (Ctrl+Shift+I) re-indexes everything. The index
-   lives in `<backup>\.remarksync-index.db`. Clicking a result jumps to the
-   page. Turn on **Read Handwriting** in the toolbar to have indexing read
-   ink as well (needs the handwriting extra, below; the choice is
-   remembered).
+   run (a 66-document, 3,237-page library indexes in about 8 seconds the
+   first time and skips unchanged documents instantly afterwards). "Changed"
+   means the document's own timestamp *or* a text conversion the tablet
+   wrote beside it, which the device does without touching that timestamp.
+   Turning **Read Handwriting** on or off also counts, since it changes what
+   a page's searchable text is made of, so an update after toggling it
+   re-reads the library rather than skipping it.
+   **Rebuild Search Index** (Ctrl+Shift+I) re-indexes everything regardless.
+   The index lives in `<backup>\.remarksync-index.db`. Clicking a result
+   jumps to the page. Reading ink needs the handwriting extra, below; the
+   choice is remembered.
 4. **Markdown → .rmdoc** (Ctrl+M): compile any `.md` into a notebook of
    editable text pages. Upload the `.rmdoc` via the tablet's USB web UI
    (http://10.11.99.1) or drag-and-drop into the reMarkable desktop app —
@@ -65,18 +78,32 @@ CLI:
 
 ## What works on real files — and the known limits
 
-**Verified against a real 210-file device backup** (mix of software-2.x
-"version=5" and software-3.x "version=6" pages, 50k+ strokes): notebooks,
-annotated PDFs and EPUBs with ink overlay, templates, and PDF page-count
-fallback for unannotated documents all render. Real-data fixes so far:
-a tolerant v5 `.lines` scanner (the format gained extra per-line records
-around firmware 2.13 that the classic spec doesn't describe — we validate
-each line hard and skip four bytes past anything unrecognised), PDFs with
-empty page lists show their pages from the base PDF itself, and page
-placement was checked against the reMarkable desktop app (see
-`docs/adr/0001-page-coordinates-follow-the-tablet.md`): ink stays exactly
-where the tablet put it and the canvas grows around the paper when ink runs
-past its edges.
+**Verified against a real device backup** (2026-09: 806 files, 66 documents,
+3,237 pages, 288 `.rm` of which 44 are software-2.x "version=5" and 244 are
+software-3.x "version=6"): notebooks, annotated PDFs and EPUBs with ink
+overlay, templates, and PDF page-count fallback for unannotated documents all
+render.
+
+Placement is not taken on trust. The desktop app keeps its own render of each
+page it syncs, and `tests/real` compares ours against it page by page: over
+40 v6 pages our ink mass is 1.04x the device's and its centre of mass sits
+7.9 tablet pixels from where the device puts it, on a 1404-pixel-wide page
+(see `docs/adr/0001-page-coordinates-follow-the-tablet.md`). Ink stays where
+the tablet put it and the canvas grows around the paper when ink runs past
+its edges.
+
+Real-data fixes so far: v5 pages are read as the structure their header
+declares — a per-line prefix firmware ~2.13 added is what made the classic
+spec look wrong, and all 44 v5 pages parse that way and account for every
+byte, with the old tolerant scanner kept only for torn files; v5 strokes are
+drawn at the width stored on each point rather than the pen's thickness
+setting, which had them rendering at 0.39 of the device's ink; and PDFs with
+empty page lists show their pages from the base PDF itself.
+
+Known gaps, measured rather than assumed: a handful of v5 pages still draw
+1.5x to 3x the device's ink, all of them carrying wide strokes, and two
+stroke-heavy v6 pages draw about 1.37x. Templates outside the five patterns
+below are not drawn at all.
 
 Things to sanity-check against your own tablet backup on first use:
 
@@ -171,8 +198,16 @@ plain function of the previous one's output. Tests exercise the decoder
 and the layout without Qt or real files; the offscreen GUI smoke tests
 cover the window, including background indexing.
 
-Data policy: RemarkSync only **reads** your backup directory (plus one
-index file it creates there). Nothing is uploaded anywhere.
+Data policy: **nothing is ever uploaded anywhere.** Everything runs on your
+machine against your own files.
+
+Viewing, searching and compiling only **read** your backup, apart from two
+files they create inside it: the search index
+(`.remarksync-index.db`) and the handwriting cache
+(`.remarksync-recognition.db`), each with SQLite's `-wal` and `-shm`
+companions. `pull` is the one command that **writes** to the backup: it is
+what fills it from the tablet, it stages into `.remarksync-pull-tmp/`, and
+with `--prune` it also **deletes** local documents the tablet no longer has.
 
 ## Development
 
@@ -180,9 +215,25 @@ index file it creates there). Nothing is uploaded anywhere.
 .venv\Scripts\python -m pytest tests/ -q
 ```
 
-95 tests cover the scan → decode → lay out → search → compile chain,
-including authoring `.rm` fixtures with rmscene's writer, every page-frame
-rule, index refresh and cancellation, and offscreen GUI smoke tests.
+103 tests (2026-09) cover the scan → decode → lay out → search → compile
+chain, including authoring `.rm` fixtures with rmscene's writer, every
+page-frame rule, index refresh, cancellation and schema migration, and
+offscreen GUI smoke tests. All of them are synthetic, so they need no tablet
+and no backup.
+
+A second, opt-in suite checks the renderer against real data:
+
+```bash
+$env:REMARKSYNC_REAL_BACKUP   = "C:\Backups\reMarkable\raw"
+$env:REMARKSYNC_DESKTOP_STORE = "$env:APPDATA\remarkable\desktop"
+.venv\Scripts\python -m pytest tests/real -q
+```
+
+The reMarkable desktop app keeps its own render of every page it has synced,
+so `tests/real` pairs those to the same pages in a backup and asserts our
+ink lands in the same place with the same weight. It is read-only, and it
+skips unless both variables are set. `python -m tests.real.characterize
+parity` prints the measured distributions the thresholds come from.
 
 Architecture decisions live in `docs/adr/`.
 
