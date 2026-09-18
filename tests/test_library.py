@@ -83,3 +83,30 @@ def test_rebuild_index_can_be_cancelled(backup_root):
     assert not report.completed
     assert len(calls) == 1
     assert lib.has_index  # what was indexed is kept
+
+
+def test_refresh_index_notices_a_conversion_added_without_a_metadata_change(backup_root):
+    """The tablet writes its own text conversion beside a document *without*
+    touching that document's metadata -- pull.py exists partly because of
+    that. So an index keyed on lastModified alone never sees the conversion,
+    and text the tablet already recognised stays unsearchable until a full
+    rebuild.
+    """
+    import json
+
+    lib = Library(backup_root)
+    lib.refresh_index()
+    assert lib.search("photosynthesis") == []
+
+    folder = backup_root / f"{INK_UUID}.textconversion"
+    folder.mkdir()
+    (folder / "0.json").write_text(
+        json.dumps({"text": "<p>photosynthesis in the leaves</p>"}), encoding="utf-8"
+    )
+    # deliberately no metadata write: this is what the device does
+
+    lib.refresh()
+    report = lib.refresh_index()
+    assert report.skipped < len(lib.documents)  # Ink Notes must not be skipped
+    hits = lib.search("photosynthesis")
+    assert hits and hits[0].doc_uuid == INK_UUID

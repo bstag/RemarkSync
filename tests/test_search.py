@@ -135,3 +135,61 @@ def test_extractors_feed_the_index(backup_root, tmp_path):
     index.refresh([d for d in _docs(backup_root) if d.uuid == PDF_UUID])
     hits = index.query("xylophone")
     assert hits and hits[0].doc_uuid == PDF_UUID
+
+
+def test_refresh_reindexes_when_the_extractor_set_changes(backup_root, tmp_path):
+    """What a page's text *is* depends on which extractors ran. Turning
+    handwriting on adds an extractor, so every document already in the index
+    was built from a different recipe and has to be read again -- otherwise
+    ticking Read Handwriting and pressing Update does nothing.
+    """
+    index = SearchIndex(tmp_path / "index.db")
+    index.refresh(_docs(backup_root))
+    assert index.query("xylophone") == []
+
+    index.extractors = list(index.extractors) + [lambda source: "xylophone"]
+    report = index.refresh(_docs(backup_root))
+    assert report.skipped == 0
+    assert index.query("xylophone")
+
+
+OLD_SCHEMA = """
+CREATE TABLE IF NOT EXISTS docs (
+    uuid TEXT PRIMARY KEY,
+    name TEXT,
+    file_type TEXT,
+    page_count INTEGER,
+    last_modified TEXT
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
+    doc_uuid UNINDEXED,
+    page_no UNINDEXED,
+    name,
+    text,
+    tokenize='unicode61 remove_diacritics 2'
+);
+"""
+
+
+def test_refresh_upgrades_an_index_written_before_signatures(backup_root, tmp_path):
+    """Someone's backup already holds an index built by an older version.
+    ``CREATE TABLE IF NOT EXISTS`` will not add a column to it, so a refresh
+    has to migrate rather than explode or silently write to a column that
+    is not there.
+    """
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(OLD_SCHEMA)
+    conn.execute(
+        "INSERT INTO docs VALUES (?,?,?,?,?)",
+        (INK_UUID, "Ink Notes", "notebook", 2, "1700000000000"),
+    )
+    conn.commit()
+    conn.close()
+
+    index = SearchIndex(path)
+    report = index.refresh(_docs(backup_root))
+    assert report.indexed >= 1
+    assert index.query("quantum")  # the old row was re-read, not trusted

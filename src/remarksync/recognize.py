@@ -87,6 +87,27 @@ def tablet_conversion(source: PageSource) -> str:
     return conversion_text(data.get("text", ""))
 
 
+def conversion_signature(doc: DocItem) -> str:
+    """A fingerprint of the tablet's conversions for ``doc``, empty if none.
+
+    The device writes a conversion beside a document *without* touching that
+    document's metadata (see :mod:`remarksync.pull`), so anything keyed on
+    ``lastModified`` alone cannot tell that new text has arrived. Each file's
+    name, size and mtime is enough to notice one appearing or changing.
+    """
+    folder = _conversion_dir(doc)
+    if folder is None:
+        return ""
+    parts = []
+    for path in sorted(folder.glob("*.json")):
+        try:
+            stat = path.stat()
+        except OSError:  # vanished mid-scan; treat it as absent
+            continue
+        parts.append(f"{path.name}:{stat.st_size}:{int(stat.st_mtime)}")
+    return ";".join(parts)
+
+
 def _conversion_dir(doc: DocItem) -> Path | None:
     if doc.doc_dir is None:
         return None
