@@ -45,31 +45,49 @@ def steps() -> None:
     whatever is on screen. Both are decisions for whoever owns the device, so
     this prints and explains rather than doing.
     """
-    print("On the tablet, over SSH. Each step is reversible; step 2 restarts")
-    print("the reMarkable UI, which takes a few seconds and loses nothing.\n")
-    print("1. Turn the dump on for xochitl:")
+    print("Two things to know before starting, both learned the hard way:\n")
+    print("  * Every page directory already holds <page-uuid>-metadata.json,")
+    print("    76 bytes of layer names. That is not a dump. Any command that")
+    print("    lists '*.json' will match those and look like success.")
+    print("  * SCENE_FILE_V6_DEBUG concerns v6 files. A notebook from")
+    print("    software 2.x stores v5 pages and will never dump, whatever is")
+    print("    enabled. The page has to be newly made.\n")
+    print("-" * 70)
+    print("\n1. Turn the dump on. This restarts the reMarkable UI, which takes")
+    print("   a few seconds and loses nothing:\n")
     print(f"     ssh {HOST}")
     print("     mkdir -p /etc/systemd/system/xochitl.service.d")
     print("     printf '[Service]\\nEnvironment=SCENE_FILE_V6_DEBUG=1\\n' \\")
     print("       > /etc/systemd/system/xochitl.service.d/debug.conf")
     print("     systemctl daemon-reload && systemctl restart xochitl\n")
-    print("2. On the tablet itself: make a new notebook, type a few lines,")
-    print("   then draw ink well below the typed text so the page overflows,")
-    print("   and leave the page. That save is what writes the dump.\n")
-    print("3. Check that dumps appeared, and copy them here:")
-    print(f"     ssh {HOST} 'ls -t {REMOTE_DIR}/*/*.json | head'")
-    print(f"     mkdir {CACHE}")
-    print(f"     scp {HOST}:{REMOTE_DIR}/'<doc-uuid>/<page-uuid>.json' {CACHE}\\<doc-uuid>__<page-uuid>.json\n")
-    print("4. Pull the backup so the same revision is compared:")
+    print("2. Confirm the running process actually has it, rather than")
+    print("   assuming the file took effect:\n")
+    print("     tr '\\0' '\\n' < /proc/$(pidof xochitl)/environ | grep SCENE_FILE")
+    print("     # expect: SCENE_FILE_V6_DEBUG=1\n")
+    print("3. On the tablet: create a NEW notebook. Type a few lines, then")
+    print("   draw ink well below the typed text so the page overflows, then")
+    print("   leave the page. Leaving it is what saves it.\n")
+    print("4. Find what the save actually wrote. The dump's name and place are")
+    print("   not documented, so look three ways and ignore -metadata.json:\n")
+    print(f"     find {REMOTE_DIR} -name '*.json' ! -name '*-metadata.json' \\")
+    print("       -newermt '-15 minutes' -exec ls -l {} \\;")
+    print("     journalctl -u xochitl --since '-15 min' | grep -iE 'json|scene|debug' | tail -30")
+    print("     ls -lt /tmp/*.json 2>/dev/null | head\n")
+    print("5. Copy whatever that turns up, naming it so the page can be")
+    print("   matched afterwards:\n")
+    print(f"     mkdir -p {CACHE}")
+    print(f"     scp {HOST}:<full-path-of-dump> {CACHE}\\<doc-uuid>__<page-uuid>.json\n")
+    print("6. Pull the backup so the same revision is compared, then diff:\n")
     print("     .venv\\Scripts\\python -m remarksync pull C:\\Backups\\reMarkable\\raw")
-    print("     .venv\\Scripts\\python -m tests.real.device_pdf freshness\n")
-    print("5. Then, here:")
+    print("     .venv\\Scripts\\python -m tests.real.device_pdf freshness")
     print("     .venv\\Scripts\\python -m tests.real.scene_json compare\n")
-    print("To undo step 1:")
+    print("-" * 70)
+    print("\nTo undo step 1:\n")
     print("     rm /etc/systemd/system/xochitl.service.d/debug.conf")
-    print("     systemctl daemon-reload && systemctl restart xochitl")
-    print("\nLeaving it on costs a JSON file beside every page you edit, so it")
-    print("is worth turning off once the question is answered.")
+    print("     systemctl daemon-reload && systemctl restart xochitl\n")
+    print("Worth undoing: left on it writes a dump beside every page you edit.")
+    print("\nIf step 4 finds nothing, the switch does not do this on your")
+    print("firmware and this route is a dead end -- say so rather than hunting.")
 
 
 def _summarise_ours(rm_path: Path) -> dict:
@@ -107,9 +125,21 @@ def _walk(node, out: dict, depth: int = 0) -> dict:
 
 def compare() -> None:
     """Show the device's view of a page beside ours, so they can be diffed."""
-    dumps = sorted(CACHE.glob("*.json")) if CACHE.exists() else []
+    found = sorted(CACHE.glob("*.json")) if CACHE.exists() else []
+    # xochitl writes <page-uuid>-metadata.json beside every page: 76 bytes of
+    # layer names. It is not a scene dump, and it is easy to copy by accident
+    # because it matches any '*.json' listing.
+    layer_files = [p for p in found if p.name.endswith("-metadata.json") or p.stat().st_size < 512]
+    dumps = [p for p in found if p not in layer_files]
+    if layer_files:
+        print(f"ignoring {len(layer_files)} file(s) that are page metadata, not scene dumps:")
+        for path in layer_files[:6]:
+            print(f"   {path.name} ({path.stat().st_size} bytes)")
+        print()
     if not dumps:
-        print(f"no dumps in {CACHE}; run the 'pull' mode first")
+        print(f"no scene dumps in {CACHE}.")
+        print("Run 'steps' and follow step 4: the dump is not *-metadata.json,")
+        print("and a v5 notebook will never produce one.")
         return
     backup = Path(os.environ.get("REMARKSYNC_REAL_BACKUP", r"C:\Backups\reMarkable\raw"))
     for dump in dumps:
