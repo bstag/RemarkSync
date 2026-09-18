@@ -23,12 +23,29 @@ from typing import Iterable
 
 # -- the text block ----------------------------------------------------------
 
-# Text-box placement as the tablet itself writes it: x centre-relative,
+# Text-block placement as the tablet itself writes it: x centre-relative,
 # y from the page top. A page typed on the device (software 3.x, 2026-09)
 # stored pos (-576, 234) with width 1152; compiled pages use the same.
-TEXT_POS_X = -576.0
 TEXT_POS_Y = 234.0
+#
+# The width is a *setting*, not a constant. The device offers three column
+# widths in its text UI, and the file records the chosen one:
+# ``RootText.settings.textWidth``, which a scene dump from software 3.27 showed
+# as an explicit 1152. Two of the three appear in the reference backup -- 1152
+# (34 blocks) and 936 (6) -- and the third has not been seen yet.
+#
+# A block is always centred on its own page, so pos_x is -width/2 and the
+# margin follows from the sheet: 1152 on a 1404 sheet leaves 126 a side, and on
+# a 1620 Paper Pro sheet 234. That is why both x values turn up in real files.
+#
+# TEXT_WIDTH is therefore a default for callers with nothing better -- the
+# compiler, and a block whose own width is missing -- and every function here
+# takes the width as an argument. Reading is width-agnostic; only writing has
+# to choose.
 TEXT_WIDTH = 1152.0
+TEXT_POS_X = -TEXT_WIDTH / 2  # blocks are centred, so this follows the width
+# Widths seen in real files. Not exhaustive: the UI offers three.
+KNOWN_TEXT_WIDTHS = (936.0, 1152.0)
 # Glyphs start this far right of the box's pos_x.
 TEXT_LEFT_PAD = 15.0
 # The first line's baseline sits this far below the box's pos_y, for every style.
