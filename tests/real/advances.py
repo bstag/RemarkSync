@@ -1,19 +1,32 @@
 """Measure the glyph advances the tablet actually uses, from its own line breaks.
 
 ``textmetrics`` scales a character's width as ``advance * font size``, with the
-advances measured from the device's exports. Only 23 of the 62 letters and digits
-were ever measured; the rest share one average, so a break point is a character
-or two out on text made of them -- ``f`` and ``j`` are narrower than the average
-and we break too early, ``A`` and ``M`` are wider and we break too late.
+advances measured from the device's exports. Give it a paragraph of one
+character repeated and the width of the lines it draws pins that character's
+advance: a line holding ``n`` of them is ``n * advance * size`` px wide.
 
-The device will measure the rest for us. Give it a paragraph of one character
-repeated, and where it breaks the line pins that character's advance: if a full
-line holds ``n`` of them in a column ``limit`` px wide, then
+Every letter and digit was measured this way on 2026-09-18. What was left
+afterwards is punctuation -- the serif face had none of it at all, so a heading
+carrying a comma or an apostrophe wrapped on the fallback average.
 
-    limit / ((n + 1) * size)  <  advance  <=  limit / (n * size)
+Punctuation needed more care than letters did, and taught us two things.
 
-One paragraph per character, compiled and uploaded, and the tablet's PDF export
-gives every bound at once.
+**The faces kern.** A mark's advance depends on what follows it: the serif sets
+``,`` 0.237 em before another comma and 0.248 before a letter, and ``x`` 0.496
+before ``!`` but 0.453 before ``-``. So there is no single advance to read off a
+run of one mark, and nobody types ``,,,,`` anyway. Each character is therefore
+set twice, alone and paired with a letter, and it is the step **onto the letter**
+that is recorded, that being the step ordinary text takes. The difference between
+the two is reported as the kerning it is; ``textmetrics`` does not model it.
+
+**The step is the measurement.** Two glyph origins apart is the advance, plainly.
+The older reading -- a line's width shared out over its glyphs -- has to be told
+the partner's advance before it can subtract it, and a stale value for ``x``
+biased every paired reading by 0.013 em before this was noticed.
+
+The fixture cannot go through Markdown, which would strip ``*``, ``_`` and
+backticks as emphasis and read a leading ``#`` or ``-`` as a block marker.
+:mod:`tests.real.fixture` hands the compiler styled paragraphs instead.
 
     python -m tests.real.advances build     # write the fixture and compile it
     python -m tests.real.advances upload    # POST it to the tablet
@@ -29,77 +42,72 @@ import os
 import string
 import sys
 from pathlib import Path
+from statistics import median
 
 from remarksync.textmetrics import (ADVANCE_SANS, ADVANCE_SERIF, DEFAULT_ADVANCE_SANS,
-                                    DEFAULT_ADVANCE_SERIF, STYLES, style)
+                                    DEFAULT_ADVANCE_SERIF, LIGATURES_SANS, LIGATURES_SERIF, style)
 
+from .exported import drawn_paragraphs
+from .fixture import compile_runs, style_for
 from .tablet import document_id, export_pdf, upload as post_archive
 
 WORK = Path(os.environ.get("REMARKSYNC_ADVANCES", str(Path(os.environ["TEMP"]) / "rs-advances")))
 TITLE = "RemarkSync advance scale"
 ARCHIVE = WORK / "advances.rmdoc"
-SOURCE = WORK / "advances.md"
 
 ALNUM = string.ascii_letters + string.digits
+# The marks a note actually carries: ASCII, then the typographic forms a word
+# processor would have produced.
+PUNCTUATION = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~" + "–—‘’“”…"
+CANDIDATES = ALNUM + PUNCTUATION
 # Long enough that even the widest plausible glyph wraps at least twice, so a
 # full line's count is unambiguous, and short enough to keep the document small.
 RUN = 220
-# One control per table: a character already measured, so the method can be
+# One control per face: a character already measured, so the method can be
 # checked against a known value before any new number is believed.
-CONTROLS = {"serif": "g", "sans": "g"}
-# 'f' cannot be measured from a run of its own: the device sets 'ff' as a single
-# ligature glyph, so the run is neither pure 'f' nor 'f'-width. Pairing it with a
-# character that cannot ligature after 'f', whose advance is already measured,
-# gives the same answer -- the pair's width minus the known one.
+CONTROL = "g"
+# The letter each character is also set against, so its advance can be read
+# stepping onto a letter rather than onto its own kind -- which is what ordinary
+# text does, and what the kerning makes different.
 PARTNER = "x"
-UNITS = {"f": "f" + PARTNER}
+# The widest glyph either face has (serif 'W'). A reading past it is a failed
+# measurement, not a wide character.
+WIDEST = 1.02
 
 
-def unit_for(char: str) -> str:
-    return UNITS.get(char, char)
+def _table(serif: bool) -> dict[str, float]:
+    return ADVANCE_SERIF if serif else ADVANCE_SANS
 
 
 def _missing(serif: bool) -> list[str]:
-    table = ADVANCE_SERIF if serif else ADVANCE_SANS
-    return [c for c in ALNUM if c not in table]
+    table = _table(serif)
+    return [c for c in CANDIDATES if c not in table]
 
 
-# The style used to measure each face: no indent, so the column is the whole
-# text width, and a Markdown marker the compiler already emits. HEADING is the
-# serif face and PLAIN the sans one.
-FACE_STYLE = {True: ("HEADING", "# "), False: ("PLAIN", "")}
-
-
-def _style_for(serif: bool) -> str:
-    name = FACE_STYLE[serif][0]
-    if STYLES[name].serif is not serif or STYLES[name].indent:
-        raise SystemExit(f"{name} is no longer the plain {'serif' if serif else 'sans'} style")
-    return name
+def _units(char: str, serif: bool) -> list[str]:
+    """The runs to set for a character: the character alone, and the character
+    paired with a known letter. A character whose doubled form the font ligates
+    can only be measured paired -- a run of it is not a run of it."""
+    ligatures = LIGATURES_SERIF if serif else LIGATURES_SANS
+    units = [] if char + char in ligatures else [char]
+    return units + [char + PARTNER]
 
 
 def build() -> None:
     WORK.mkdir(parents=True, exist_ok=True)
-    lines = []
-    plan = []
+    plan: list[tuple[str, str, str]] = []
+    paragraphs: list[tuple[str, str]] = []
     for serif in (True, False):
-        style_name = _style_for(serif)
-        marker = FACE_STYLE[serif][1]
-        chars = [CONTROLS["serif" if serif else "sans"]] + _missing(serif)
-        for char in chars:
-            unit = unit_for(char)
-            repeats = max(1, RUN // len(unit))
-            lines.append(f"{marker}{unit * repeats}")
-            lines.append("")
-            plan.append((style_name, char))
-    SOURCE.write_text("\n".join(lines), encoding="utf-8")
-
-    from remarksync.mdcompile import markdown_to_rmdoc
-
-    out = markdown_to_rmdoc(SOURCE.read_text(encoding="utf-8"), TITLE, ARCHIVE)
-    (WORK / "plan.txt").write_text("\n".join(f"{s}\t{c}" for s, c in plan), encoding="utf-8")
-    print(f"{len(plan)} runs ({sum(1 for s, _ in plan if s == plan[0][0])} in the first style)")
-    print(f"wrote {SOURCE.name} and {out.name} ({out.stat().st_size} bytes)")
-    print("styles used:", sorted({s for s, _ in plan}))
+        style_name = style_for(serif)
+        for char in [CONTROL] + _missing(serif):
+            for unit in ([CONTROL] if char == CONTROL else _units(char, serif)):
+                paragraphs.append((style_name, unit * (RUN // len(unit))))
+                plan.append((style_name, char, unit))
+    (WORK / "plan.txt").write_text(
+        "\n".join(f"{s}\t{c}\t{u}" for s, c, u in plan), encoding="utf-8")
+    out = compile_runs(TITLE, ARCHIVE, paragraphs)
+    print(f"{len(plan)} runs over {len({c for _, c, _ in plan})} characters in two faces")
+    print(f"wrote {out.name} ({out.stat().st_size} bytes)")
 
 
 def upload() -> None:
@@ -109,45 +117,22 @@ def upload() -> None:
     print(post_archive(ARCHIVE))
 
 
-def _runs_from_export(pdf_path: Path) -> list[tuple[str, int, float]]:
-    """Every line of the export that is one unit repeated, in document order,
-    as (character, characters on the line, the line's width in tablet px).
+def _gaps(group: list[list[tuple[str, float, float]]], size: float) -> dict[str, float]:
+    """How far the device moved on from each glyph to the next, in em, keyed by
+    the pair the step spans and taken as the median over the run.
 
-    The width is what matters: it is measured, where a bound inferred from the
-    column edge depends on knowing exactly where the column ends.
+    This is the advance itself, read where it is written rather than inferred:
+    the distance between two glyph origins is what the device advanced by. The
+    older reading -- a line's width shared out over the glyphs on it -- gives
+    the same answer only when every glyph on the line is the same width, and it
+    needs the partner's advance to be known in advance, which was how a stale
+    value for ``x`` quietly biased every paired measurement by 0.013.
     """
-    import pymupdf
-
-    from remarksync.layout import PDF_SCALE
-
-    runs: list[tuple[str, int, float]] = []
-    with pymupdf.open(pdf_path) as pdf:
-        for index in range(pdf.page_count):
-            rows: dict[float, list[tuple[float, float, str]]] = {}
-            for x0, _y0, x1, y1, word, *_ in pdf.load_page(index).get_text("words"):
-                rows.setdefault(round(y1, 1), []).append((x0, x1, word))
-            for _, boxes in sorted(rows.items()):
-                boxes.sort()
-                line = "".join(word for _, _, word in boxes)
-                if not line:
-                    continue
-                width = (max(x1 for _, x1, _ in boxes) - min(x0 for x0, _, _ in boxes)) * PDF_SCALE
-                char = None
-                for candidate, unit in [(line[:1], line[:1])] + list(UNITS.items()):
-                    reps, extra = divmod(len(line), len(unit))
-                    if reps and not extra and line == unit * reps:
-                        char = candidate
-                        break
-                if char is None:
-                    continue
-                # keep the widest line of the run: that is a full one, where the
-                # last line of a paragraph is a remainder
-                if runs and runs[-1][0] == char:
-                    if len(line) > runs[-1][1]:
-                        runs[-1] = (char, len(line), width)
-                else:
-                    runs.append((char, len(line), width))
-    return runs
+    steps: dict[str, list[float]] = {}
+    for line in group:
+        for (char, x0, _x1), (following, next_x0, _) in zip(line, line[1:]):
+            steps.setdefault(char + following, []).append((next_x0 - x0) / size)
+    return {pair: median(values) for pair, values in steps.items() if len(values) >= 3}
 
 
 def measure() -> None:
@@ -165,53 +150,70 @@ def measure() -> None:
         return
     plan = [tuple(line.split("\t")) for line in plan_path.read_text(encoding="utf-8").splitlines()]
 
-    runs = _runs_from_export(pdf_path)
+    runs = drawn_paragraphs(pdf_path)
     if len(runs) != len(plan):
         print(f"!! {len(runs)} runs in the export but {len(plan)} in the plan")
-        for i in range(min(len(runs), len(plan))):
-            if runs[i][0] != plan[i][1]:
-                print(f"   first divergence at {i}: export {runs[i][0]!r}, plan {plan[i][1]!r}")
-                break
         return
 
-    # the same character is measured once per face, so it has to be keyed by both
-    measured = {(style_name, char): (n, width)
-                for (style_name, char), (_c, n, width) in zip(plan, runs)}
+    # every step the device took, keyed by the character it stepped off and the
+    # run it was seen in
+    readings: dict[tuple[str, str], dict[str, float]] = {}
+    for (style_name, char, unit), group in zip(plan, runs):
+        gaps = _gaps(group, style(style_name).size)
+        seen = readings.setdefault((style_name, char), {})
+        if char + char in gaps:
+            seen["alone"] = gaps[char + char]
+        if char + PARTNER in gaps:
+            seen["paired"] = gaps[char + PARTNER]
 
-    print(f"\n{len(measured)} runs measured from {pdf_path.name}")
     results: dict[bool, dict[str, float]] = {True: {}, False: {}}
     for serif in (True, False):
-        style_name = _style_for(serif)
+        style_name = style_for(serif)
         s = style(style_name)
-        table = ADVANCE_SERIF if serif else ADVANCE_SANS
+        table = _table(serif)
         default = DEFAULT_ADVANCE_SERIF if serif else DEFAULT_ADVANCE_SANS
         print(f"\n-- {'serif' if serif else 'sans'} ({style_name}) at size {s.size} --")
-        print(f"{'char':>5} {'chars':>6} {'width px':>9} {'advance':>8} {'table':>7}  note")
-        for char in [CONTROLS["serif" if serif else "sans"]] + _missing(serif):
-            entry = measured.get((style_name, char))
-            if entry is None:
+        print(f"{'char':>6} {'alone':>7} {'paired':>7} {'take':>7} {'table':>7}  note")
+        for char in [CONTROL] + _missing(serif):
+            seen = readings.get((style_name, char), {})
+            alone = seen.get("alone")
+            paired = seen.get("paired")
+            # the step onto a letter is the one ordinary text takes: nobody
+            # types ',,,,', and the face kerns, so a mark's advance among its
+            # own kind is not the advance it has in a sentence
+            take = paired if paired is not None else alone
+            notes = []
+            if take is None:
+                print(f"{char!r:>6} {'':>7} {'':>7} {'':>7} {'':>7}  not in the export")
                 continue
-            n, width = entry
-            unit = unit_for(char)
-            units = n // len(unit)
-            others = sum(table.get(c, default) for c in unit[1:])
-            advance = round(width / (units * s.size) - others, 3)
+            if paired is None:
+                notes.append("no step onto the partner: taking the run of its own")
+            elif alone is not None and abs(alone - paired) > 0.01:
+                notes.append(f"kerns {alone - paired:+.3f} against its own kind")
+            # nothing in either face is wider than 'W', so a reading past it is
+            # the measurement failing rather than a wide glyph: the serif grave
+            # composes with the letter after it and reads 1.079 that way
+            if take > WIDEST:
+                print(f"{char!r:>6} {f'{alone:.3f}' if alone is not None else '':>7} "
+                      f"{f'{paired:.3f}' if paired is not None else '':>7} {take:7.3f} "
+                      f"{'':>7}  IMPLAUSIBLE (past {WIDEST}), left out")
+                continue
             known = table.get(char)
             if known is None:
-                results[serif][char] = advance
-                note = f"was the {default} fallback"
+                results[serif][char] = round(take, 3)
+                notes.append(f"was the {default} fallback")
             else:
-                drift = abs(advance - known) / known
-                note = (f"control: {'agrees' if drift < 0.02 else 'DISAGREES'} "
-                        f"({drift * 100:.1f}% from {known})")
-            print(f"{char!r:>5} {n:6} {width:9.1f} {advance:8.3f} "
-                  f"{known if known is not None else default:7}  {note}")
+                off = abs(take - known) / known
+                notes.append(f"control: {'agrees' if off < 0.02 else 'DISAGREES'} "
+                             f"({off * 100:.1f}% from {known})")
+            print(f"{char!r:>6} {f'{alone:.3f}' if alone is not None else '':>7} "
+                  f"{f'{paired:.3f}' if paired is not None else '':>7} {take:7.3f} "
+                  f"{known if known is not None else '':>7}  {'; '.join(notes)}")
 
     for serif in (True, False):
         if results[serif]:
             print(f"\nready to paste into ADVANCE_{'SERIF' if serif else 'SANS'}:")
-            line = ", ".join(f'"{c}": {v}' for c, v in sorted(results[serif].items()))
-            print(f"    {line}")
+            print("    " + ", ".join(f"{c!r}: {v}" for c, v in sorted(results[serif].items())))
 
 
 MODES = ("build", "upload", "measure")

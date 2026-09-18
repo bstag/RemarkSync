@@ -37,13 +37,13 @@ from pathlib import Path
 
 from remarksync.textmetrics import ADVANCE_SANS, ADVANCE_SERIF, style
 
-from .advances import FACE_STYLE, _style_for
+from .exported import drawn_paragraphs
+from .fixture import compile_runs, style_for
 from .tablet import document_id, export_pdf, upload as post_archive
 
 WORK = Path(os.environ.get("REMARKSYNC_LIGATURES", str(Path(os.environ["TEMP"]) / "rs-ligatures")))
 TITLE = "RemarkSync ligature scale"
 ARCHIVE = WORK / "ligatures.rmdoc"
-SOURCE = WORK / "ligatures.md"
 
 # Every pair worth asking about. The f-ligatures are the classic set and the
 # only ones either export has shown, so the candidates are f followed by each
@@ -56,23 +56,18 @@ RUN = 220
 
 
 def build() -> None:
-    from remarksync.mdcompile import markdown_to_rmdoc
-
     WORK.mkdir(parents=True, exist_ok=True)
-    lines: list[str] = []
     plan: list[tuple[str, str]] = []
+    paragraphs: list[tuple[str, str]] = []
     for serif in (True, False):
-        style_name = _style_for(serif)
-        marker = FACE_STYLE[serif][1]
+        style_name = style_for(serif)
         for pair in CANDIDATES:
-            lines.append(f"{marker}{pair * (RUN // len(pair))}")
-            lines.append("")
+            paragraphs.append((style_name, pair * (RUN // len(pair))))
             plan.append((style_name, pair))
-    SOURCE.write_text("\n".join(lines), encoding="utf-8")
-    out = markdown_to_rmdoc(SOURCE.read_text(encoding="utf-8"), TITLE, ARCHIVE)
+    out = compile_runs(TITLE, ARCHIVE, paragraphs)
     (WORK / "plan.txt").write_text("\n".join(f"{s}\t{p}" for s, p in plan), encoding="utf-8")
     print(f"{len(plan)} runs over {len(CANDIDATES)} pairs in two faces")
-    print(f"wrote {SOURCE.name} and {out.name} ({out.stat().st_size} bytes)")
+    print(f"wrote {out.name} ({out.stat().st_size} bytes)")
 
 
 def upload() -> None:
@@ -80,51 +75,6 @@ def upload() -> None:
         print("no archive; run 'build' first")
         return
     print(post_archive(ARCHIVE))
-
-
-def _paragraphs_from_export(pdf_path: Path) -> list[list[list[tuple[str, float, float]]]]:
-    """The export's paragraphs, each as its drawn lines, each line as its glyphs
-    with their left and right edges in tablet px.
-
-    Glyphs, not characters: that is the whole point of the measurement. A
-    ligature is one glyph here however many letters went into it.
-
-    Paragraphs are told apart by the gap between lines, which is what
-    :mod:`remarksync.textmetrics` already knows: lines inside a paragraph sit
-    1.19 (serif) to 1.42 (sans) font sizes apart, and two paragraphs 2.56 or
-    2.17, so anything past 1.8 starts a new one. A page break does too, the
-    compiler not splitting a paragraph across pages.
-    """
-    import pymupdf
-
-    from remarksync.layout import PDF_SCALE
-
-    paragraphs: list[list[list[tuple[str, float, float]]]] = []
-    with pymupdf.open(pdf_path) as pdf:
-        for index in range(pdf.page_count):
-            rows: dict[float, list[tuple[str, float, float]]] = {}
-            sizes: dict[float, float] = {}
-            for block in pdf.load_page(index).get_text("rawdict")["blocks"]:
-                for line in block.get("lines", []):
-                    for span in line["spans"]:
-                        for char in span["chars"]:
-                            x0, _y0, x1, y1 = char["bbox"]
-                            if char["c"] == " ":
-                                continue
-                            key = round(y1, 1)
-                            rows.setdefault(key, []).append(
-                                (char["c"], x0 * PDF_SCALE, x1 * PDF_SCALE))
-                            sizes[key] = span["size"] * PDF_SCALE
-            previous: float | None = None
-            for y, glyphs in sorted(rows.items()):
-                glyphs.sort(key=lambda g: g[1])
-                gap = None if previous is None else (y - previous) * PDF_SCALE
-                if gap is None or gap > 1.8 * sizes[y]:
-                    paragraphs.append([glyphs])
-                else:
-                    paragraphs[-1].append(glyphs)
-                previous = y
-    return paragraphs
 
 
 def measure() -> None:
@@ -141,14 +91,14 @@ def measure() -> None:
         return
     plan = [tuple(line.split("\t")) for line in plan_path.read_text(encoding="utf-8").splitlines()]
 
-    runs = _paragraphs_from_export(pdf_path)
+    runs = drawn_paragraphs(pdf_path)
     if len(runs) != len(plan):
         print(f"!! {len(runs)} runs in the export but {len(plan)} in the plan")
         return
 
     results: dict[bool, dict[str, float]] = {True: {}, False: {}}
     for serif in (True, False):
-        style_name = _style_for(serif)
+        style_name = style_for(serif)
         s = style(style_name)
         table = ADVANCE_SERIF if serif else ADVANCE_SANS
         print(f"\n-- {'serif' if serif else 'sans'} ({style_name}) at size {s.size} --")

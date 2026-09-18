@@ -245,3 +245,33 @@ def test_a_line_break_never_splits_a_ligature():
     lines = wrap(head + "fjmgf", heading, 936.0)
     assert lines[0] == head
     assert lines[1].startswith("fj")
+
+
+def test_both_faces_measure_the_punctuation_a_note_carries():
+    """The serif face had no punctuation at all until 2026-09-18, so a heading
+    with a comma in it wrapped on the fallback average."""
+    from remarksync.textmetrics import ADVANCE_SANS, ADVANCE_SERIF
+
+    for table in (ADVANCE_SERIF, ADVANCE_SANS):
+        for char in ".,;:'\"!?()-/&%#@[]{}<>=+*_|~" + "–—‘’“”…":
+            assert char in table, f"{char!r} is still on the fallback"
+
+    # the grave accent is the one deliberate hole: it composes with the letter
+    # after it, so the measurement read it wider than 'W' and was left out
+    assert "`" not in ADVANCE_SERIF
+    assert "`" in ADVANCE_SANS
+
+
+def test_punctuation_is_narrow_where_the_fallback_was_average():
+    """Why it mattered: the marks that actually recur in prose are half the
+    width the fallback assumed, so a line of them wrapped far too early."""
+    from remarksync.textmetrics import DEFAULT_ADVANCE_SERIF, text_width
+
+    heading = style("HEADING")
+    for char in ".,'":
+        measured = text_width(char, heading) / heading.size
+        assert measured < DEFAULT_ADVANCE_SERIF / 1.8
+
+    # a quoted sentence in a heading: 10 marks that were each 0.52 before
+    quoted = '"It is," she said, "quite so."'
+    assert text_width(quoted, heading) < 0.80 * DEFAULT_ADVANCE_SERIF * heading.size * len(quoted)

@@ -53,6 +53,51 @@ def drawn_lines(pdf, index: int) -> list[str]:
     return ["".join(g for _, g in sorted(glyphs)) for _, glyphs in sorted(rows.items())]
 
 
+def drawn_paragraphs(pdf_path: Path) -> list[list[list[tuple[str, float, float]]]]:
+    """The export's paragraphs, each as its drawn lines, each line as its glyphs
+    with their left and right edges in tablet px.
+
+    Glyphs, not characters: that is the whole point of the measurement. A
+    ligature is one glyph here however many letters went into it.
+
+    Paragraphs are told apart by the gap between lines, which is what
+    :mod:`remarksync.textmetrics` already knows: lines inside a paragraph sit
+    1.19 (serif) to 1.42 (sans) font sizes apart, and two paragraphs 2.56 or
+    2.17, so anything past 1.8 starts a new one. A page break does too, the
+    compiler not splitting a paragraph across pages.
+    """
+    import pymupdf
+
+    from remarksync.layout import PDF_SCALE
+
+    paragraphs: list[list[list[tuple[str, float, float]]]] = []
+    with pymupdf.open(pdf_path) as pdf:
+        for index in range(pdf.page_count):
+            rows: dict[float, list[tuple[str, float, float]]] = {}
+            sizes: dict[float, float] = {}
+            for block in pdf.load_page(index).get_text("rawdict")["blocks"]:
+                for line in block.get("lines", []):
+                    for span in line["spans"]:
+                        for char in span["chars"]:
+                            x0, _y0, x1, y1 = char["bbox"]
+                            if char["c"] == " ":
+                                continue
+                            key = round(y1, 1)
+                            rows.setdefault(key, []).append(
+                                (char["c"], x0 * PDF_SCALE, x1 * PDF_SCALE))
+                            sizes[key] = span["size"] * PDF_SCALE
+            previous: float | None = None
+            for y, glyphs in sorted(rows.items()):
+                glyphs.sort(key=lambda g: g[1])
+                gap = None if previous is None else (y - previous) * PDF_SCALE
+                if gap is None or gap > 1.8 * sizes[y]:
+                    paragraphs.append([glyphs])
+                else:
+                    paragraphs[-1].append(glyphs)
+                previous = y
+    return paragraphs
+
+
 def canonical(line: str, s: Style | None = None) -> str:
     """A line in the alphabet both sides share: ligatures folded to one
     character, list markers dropped, ends trimmed.

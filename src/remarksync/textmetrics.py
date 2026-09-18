@@ -165,6 +165,13 @@ ADVANCE_SANS: dict[str, float] = {
     '9': 0.587, 'G': 0.725, 'H': 0.726, 'I': 0.272, 'J': 0.484, 'K': 0.639,
     'O': 0.749, 'V': 0.656, 'X': 0.627, 'Y': 0.594, 'Z': 0.582, 'j': 0.249,
     'z': 0.454,
+    # Punctuation, same day and the same way, but read as the step onto a
+    # letter rather than onto another of its own kind (see KERNING below).
+    '!': 0.306, '#': 0.607, '$': 0.647, '%': 0.796, '&': 0.673, "'": 0.187,
+    ')': 0.328, '*': 0.432, ';': 0.260, '<': 0.554, '=': 0.563, '>': 0.554,
+    '?': 0.494, '@': 0.819, '[': 0.356, ']': 0.356, '^': 0.559, '_': 0.484,
+    '`': 0.259, '{': 0.398, '|': 0.335, '}': 0.398, '~': 0.552, '–': 0.594,
+    '‘': 0.192, '’': 0.192, '“': 0.367, '”': 0.359, '…': 0.651,
 }
 ADVANCE_SERIF: dict[str, float] = {
     ' ': 0.235, 'H': 0.727, 'R': 0.646, 'S': 0.567, 'T': 0.639, 'a': 0.523,
@@ -183,9 +190,32 @@ ADVANCE_SERIF: dict[str, float] = {
     'q': 0.595, 'u': 0.569, 'v': 0.505,
     # 'a' was 0.521 from the first fit; a line of 21 of them on the 740 px page
     # measures 700.2 px, which is 0.523, and the difference decides that line.
+    # Punctuation, of which this face had none: a heading carrying a comma
+    # wrapped on the 0.52 fallback. Read as the step onto a letter (see KERNING
+    # below). The grave accent is left out on purpose -- it composes with the
+    # letter after it and read 1.079 em, wider than 'W', so the measurement
+    # failed rather than found a wide glyph.
+    '!': 0.306, '"': 0.347, '#': 0.592, '$': 0.543, '%': 0.736, '&': 0.687,
+    "'": 0.193, '(': 0.318, ')': 0.318, '*': 0.436, '+': 0.542, ',': 0.248,
+    '-': 0.299, '.': 0.230, '/': 0.322, ':': 0.259, ';': 0.270, '<': 0.552,
+    '=': 0.559, '>': 0.552, '?': 0.445, '@': 0.848, '[': 0.341, '\\': 0.360,
+    ']': 0.341, '^': 0.552, '_': 0.485, '{': 0.374, '|': 0.296, '}': 0.374,
+    '~': 0.542, '–': 0.590, '—': 0.891, '‘': 0.194, '’': 0.194, '“': 0.358,
+    '”': 0.358, '…': 0.678,
 }
 DEFAULT_ADVANCE_SANS = 0.54
 DEFAULT_ADVANCE_SERIF = 0.52
+# The faces kern, and this model does not. An advance above is one number per
+# character, but the device's is a number per *pair*: the serif steps 0.237 em
+# from one comma to the next and 0.248 from a comma to a letter, and 0.496 from
+# 'x' to '!' but 0.453 from 'x' to '-'. Measured 2026-09-18 by stepping between
+# glyph origins in the export (tests/real/advances.py).
+#
+# Every advance here is therefore the step onto an ordinary letter, that being
+# what running text asks for. The residue is the kerning we leave out, which on
+# the marks that kern at all is up to 0.06 em -- about 4 px in a heading, 2 in
+# body text, so it takes several of them on one line to move a break.
+KERNING_UNMODELLED = 0.06
 # Pairs the device fonts set as a single glyph, with that glyph's advance in em.
 # Measured 2026-09-18 by tests/real/ligatures.py, which put a paragraph of each
 # f-pair on the tablet and read the glyph stream of its export back: a ligature
