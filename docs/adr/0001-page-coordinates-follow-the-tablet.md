@@ -63,7 +63,13 @@ v5 from 1.089 to 1.031 of the device's ink mass and its placement from 26.8 to
 themselves are asserted against the exported page box in
 `tests/real/test_device_pdf_parity.py`.
 
-Still open: horizontal growth looks quantised — two pages needing 1797 and
-1779 px both export at exactly 1873 — and `_extent` underestimates a typed
-text block, because `TextBlock.height` is a default rather than the height of
-the block's laid-out lines.
+Still open, both unexplained rather than merely unfixed:
+
+* horizontal growth looks quantised — two pages needing 1797 and 1779 px both
+  export at exactly 1873;
+* a page that carries typed text *and* overflows comes out 297, 37 and 296 px
+  short of the exported box, while typed text alone or overflow alone agree to
+  within 2 px. It is not the text block's own extent: `block_height` is
+  applied and correct, and on the two worst pages the block ends at y=309
+  while the strokes reach 3,586 and 13,752. Anchored ink is the suspect, since
+  `_group_anchor` places it from our own text layout.

@@ -17,9 +17,17 @@ Three hazards are guarded rather than assumed:
 * the export omits pages that have no ``.rm`` file, so pages are mapped by
   position among *drawn* pages, and a document whose counts still disagree is
   skipped;
-* pages carrying typed text are excluded, because ``_extent`` derives a text
-  block's height from a default rather than from its laid-out lines and so
-  underestimates where its content ends.
+* pages carrying typed text are excluded when they also overflow, for a
+  reason not yet understood.
+
+On that last point, so nobody re-derives it: the exclusion is empirical, not
+explained. Pages with typed text that do *not* overflow agree to within 1 px,
+and pages that overflow without typed text agree to within 2 px. Pages that do
+both fall short by 297, 37 and 296 px. It is not the text block's own extent --
+``block_height`` is applied and correct on every page checked, and on the two
+worst pages the block ends at y=309 while the strokes alone reach 3,586 and
+13,752. The leading suspect is anchored ink, which ``_group_anchor`` positions
+from our own text layout, so an error there moves ink far down the page.
 """
 
 from __future__ import annotations
@@ -55,8 +63,13 @@ def exported_pages(real_backup):
             for slot, page_ref in enumerate(drawn):
                 rect = opened.load_page(slot).rect
                 model = decode_page(page_ref.rm_path)
-                if not model.strokes or model.texts:
+                if not model.strokes:
                     continue
+                sheet = model.paper_size or (1404.0, 1872.0)
+                ys = [y for s in model.strokes for _, y in s.points]
+                overflows = bool(ys) and max(ys) > sheet[1]
+                if model.texts and overflows:
+                    continue  # see the module docstring: unexplained, up to ~300 px
                 frame = lay_out(model, template=page_ref.template, page_index=page_ref.index)
                 rows.append((f"{name} p{page_ref.index + 1}", model, frame.canvas_size,
                              (rect.width * PDF_SCALE, rect.height * PDF_SCALE)))
