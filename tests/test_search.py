@@ -2,7 +2,7 @@
 
 import json
 
-from remarksync.backup import DocItem, PageRef, iter_docs, scan_root
+from remarksync.backup import DocItem, PageRef, iter_docs, scan_backup
 from remarksync.recognize import PageSource
 from remarksync.rmdata import PageModel, TextBlock
 from remarksync.search import SearchIndex, typed_text_and_highlights
@@ -11,7 +11,7 @@ from .conftest import DIARY_UUID, INK_UUID, PDF_UUID
 
 
 def _docs(root):
-    return list(iter_docs(scan_root(root)))
+    return list(iter_docs(scan_backup(root)))
 
 
 def test_refresh_then_query(backup_root, tmp_path):

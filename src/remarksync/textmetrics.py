@@ -6,8 +6,8 @@ they take.
 Three modules consume this and must agree with each other:
 
 * the page decoder (:mod:`rmdata`) computes each text block's lines and
-  the anchor positions of ink pinned to text lines;
-* the Markdown compiler (:mod:`mdcompile`) places text boxes and decides
+  the anchor positions of ink pinned to the lines of a text block;
+* the Markdown compiler (:mod:`mdcompile`) places text blocks and decides
   how much text fits on a page;
 * the painter (:mod:`viewer`) draws the lines.
 
@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
-# -- the text box ------------------------------------------------------------
+# -- the text block ----------------------------------------------------------
 
 # Text-box placement as the tablet itself writes it: x centre-relative,
 # y from the page top. A page typed on the device (software 3.x, 2026-09)

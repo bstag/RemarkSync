@@ -1,4 +1,5 @@
-"""Scan a raw reMarkable backup directory (an xochitl mirror) or a single
+"""Scan a raw reMarkable backup folder (a copy of the tablet's xochitl
+directory) or a single
 .rmdoc archive into a document tree.
 
 This is the backup-folder scanner; the opened, searchable library built on
@@ -120,7 +121,7 @@ def _find_page_rm(pages_dir: Path, page_id: str, index: int) -> Path | None:
 
 def _parse_doc(uuid: str, base: Path, meta: dict) -> DocItem:
     """Parse one document. ``base`` is where the metadata files live — the
-    backup root for xochitl mirrors, the extraction dir for .rmdoc."""
+    the backup folder itself, the extraction dir for .rmdoc."""
     content_path = _first_existing([base / f"{uuid}.content", base / ".content"])
     content = _read_json(content_path) if content_path else {}
     file_type = content.get("fileType") or "notebook"
@@ -190,7 +191,7 @@ def _parse_doc(uuid: str, base: Path, meta: dict) -> DocItem:
     return doc
 
 
-def scan_root(root: Path) -> list:
+def scan_backup(root: Path) -> list:
     """Scan a backup root; returns top-level tree items (folders + docs).
 
     Deleted items are skipped; pages without a .rm are kept so document

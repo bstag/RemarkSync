@@ -344,7 +344,7 @@ class PageCanvas(QWidget):
                 painter.drawLine(QPointF(x0, y0), QPointF(x1, y1))
 
     def _paint_highlights(self, painter: QPainter, model: PageModel) -> None:
-        """Snap text highlights: translucent bands over the PDF text."""
+        """Highlights: translucent bands over the base document's own text."""
         if not model.highlights:
             return
         painter.save()

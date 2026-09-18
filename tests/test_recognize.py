@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from remarksync.backup import iter_docs, scan_root
+from remarksync.backup import iter_docs, scan_backup
 from remarksync.library import Library
 from remarksync.recognize import (PageSource, RecognisedWord, RecognitionCache, WindowsInkExtractor, conversion_text,
                                   stroke_hash, tablet_conversion, windows_ink_available, words_to_text)
@@ -16,7 +16,7 @@ from .conftest import INK_UUID
 
 
 def _ink_source(backup_root):
-    doc = {d.uuid: d for d in iter_docs(scan_root(backup_root))}[INK_UUID]
+    doc = {d.uuid: d for d in iter_docs(scan_backup(backup_root))}[INK_UUID]
     page = doc.pages[0]
     return PageSource(doc, page, decode_page(page.rm_path))
 

@@ -1,4 +1,4 @@
-"""Cut a page's ink into text lines and render them: the input a
+"""Cut a page's ink into written lines and render them: the input a
 line-based handwriting recogniser wants.
 
 We hold the strokes, not a picture, which makes line finding easy and

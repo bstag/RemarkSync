@@ -1,14 +1,14 @@
 import pytest
 
 from remarksync.backup import (TEMPLATE_DOTS, TEMPLATE_RULED, iter_docs,
-                                open_rmdoc, scan_root)
+                                open_rmdoc, scan_backup)
 
 from .conftest import (DELETED_UUID, DIARY_UUID, FOLDER_UUID, INK_UUID,
                        JOURNAL_UUID, PDF_UUID)
 
 
 def test_scan_builds_tree(backup_root):
-    tree = scan_root(backup_root)
+    tree = scan_backup(backup_root)
     assert len(tree) == 2  # Research folder + Diary doc (deleted skipped)
     folder = next(t for t in tree if t.kind == "folder")
     assert folder.name == "Research"
@@ -16,13 +16,13 @@ def test_scan_builds_tree(backup_root):
 
 
 def test_scan_skips_deleted(backup_root):
-    docs = {d.uuid: d for d in iter_docs(scan_root(backup_root))}
+    docs = {d.uuid: d for d in iter_docs(scan_backup(backup_root))}
     assert DELETED_UUID not in docs
     assert set(docs) == {INK_UUID, PDF_UUID, DIARY_UUID, JOURNAL_UUID}
 
 
 def test_notebook_pages_and_templates(backup_root):
-    docs = {d.uuid: d for d in iter_docs(scan_root(backup_root))}
+    docs = {d.uuid: d for d in iter_docs(scan_backup(backup_root))}
     ink = docs[INK_UUID]
     assert ink.file_type == "notebook"
     assert len(ink.pages) == 2
@@ -32,7 +32,7 @@ def test_notebook_pages_and_templates(backup_root):
 
 
 def test_pdf_doc_has_base(backup_root):
-    docs = {d.uuid: d for d in iter_docs(scan_root(backup_root))}
+    docs = {d.uuid: d for d in iter_docs(scan_backup(backup_root))}
     pdf_doc = docs[PDF_UUID]
     assert pdf_doc.file_type == "pdf"
     assert pdf_doc.resolve_base_pdf() == backup_root / f"{PDF_UUID}.pdf"
@@ -41,14 +41,14 @@ def test_pdf_doc_has_base(backup_root):
 
 
 def test_templates_normalised(backup_root):
-    docs = {d.uuid: d for d in iter_docs(scan_root(backup_root))}
+    docs = {d.uuid: d for d in iter_docs(scan_backup(backup_root))}
     assert docs[DIARY_UUID].pages[0].template == TEMPLATE_RULED
 
 
 def test_cpages_journal_doc(backup_root):
     """Software 3.x docs: pages as dicts under cPages.pages, flat .rm files,
     per-page template inline — must resolve like any other notebook."""
-    docs = {d.uuid: d for d in iter_docs(scan_root(backup_root))}
+    docs = {d.uuid: d for d in iter_docs(scan_backup(backup_root))}
     journal = docs[JOURNAL_UUID]
     assert journal.name == "2026"
     assert journal.parent == FOLDER_UUID

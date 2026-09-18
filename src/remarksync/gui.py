@@ -237,7 +237,7 @@ class MainWindow(QMainWindow):
     def open_folder(self, path: Path | None = None) -> None:
         if not isinstance(path, (str, Path)):
             # None from code, or a stray bool from Qt signal wiring
-            chosen = QFileDialog.getExistingDirectory(self, "Choose backup folder (xochitl mirror)")
+            chosen = QFileDialog.getExistingDirectory(self, "Choose backup folder (a copy of the tablet's xochitl directory)")
             if not chosen:
                 return
             path = Path(chosen)
@@ -249,7 +249,7 @@ class MainWindow(QMainWindow):
 
     def refresh(self) -> None:
         if self._library is not None:
-            self._library.refresh()
+            self._library.rescan()
             self._populate_tree()
 
     def _populate_tree(self) -> None:

@@ -31,7 +31,7 @@ def test_refresh_picks_up_new_documents(backup_root):
     (backup_root / new_uuid / "0").mkdir(parents=True)
     (backup_root / new_uuid / "0" / "0.rm").write_bytes(page_rm(text="late"))
     assert lib.document(new_uuid) is None
-    lib.refresh()
+    lib.rescan()
     assert lib.document(new_uuid).name == "Late Arrival"
 
 
@@ -105,7 +105,7 @@ def test_refresh_index_notices_a_conversion_added_without_a_metadata_change(back
     )
     # deliberately no metadata write: this is what the device does
 
-    lib.refresh()
+    lib.rescan()
     report = lib.refresh_index()
     assert report.skipped < len(lib.documents)  # Ink Notes must not be skipped
     hits = lib.search("photosynthesis")

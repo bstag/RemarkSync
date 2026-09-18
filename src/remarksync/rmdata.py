@@ -153,7 +153,7 @@ class Stroke:
 
 @dataclass
 class TextBlock:
-    """Typed text box in page coordinates (top-left corner + width).
+    """Typed text block in page coordinates (top-left corner + width).
 
     ``paragraphs`` are (style, text) as typed; ``lines`` are what the tablet
     draws: each paragraph wrapped into lines with a baseline (relative to
@@ -170,7 +170,7 @@ class TextBlock:
 
 
 @dataclass
-class GlyphHighlight:
+class Highlight:
     """Text highlighted inside a base PDF page (search gold)."""
 
     text: str
@@ -185,7 +185,7 @@ class PageModel:
 
     strokes: list[Stroke] = field(default_factory=list)
     texts: list[TextBlock] = field(default_factory=list)
-    highlights: list[GlyphHighlight] = field(default_factory=list)
+    highlights: list[Highlight] = field(default_factory=list)
     error: str | None = None
     # The paper this page was drawn on, in tablet px, when the file says so.
     # A Paper Pro page declares 1620x2160 where the rM2 sheet is 1404x1872,
@@ -333,7 +333,7 @@ def _decode_v6(tree) -> PageModel:
                 band_h = max(h for *_x, _y, _w, h in rects)
                 rects = [r for r in rects if r[3] >= 0.75 * band_h]
             page.highlights.append(
-                GlyphHighlight(
+                Highlight(
                     text=item.text or "",
                     rectangles=[(x + x_shift, y, w, h) for x, y, w, h in rects],
                 )

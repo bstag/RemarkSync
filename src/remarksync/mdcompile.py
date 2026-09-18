@@ -167,7 +167,7 @@ def page_rm_bytes(paragraphs, author_uuid) -> bytes:
     """A software-3.x page holding one text block with per-paragraph
     styles: rmscene's simple text document (one text item whose characters
     get consecutive ids from (1, 16)), the SceneInfo block every device
-    page carries, the text box where the device puts it, and a style entry
+    page carries, the text block where the device puts it, and a style entry
     per paragraph keyed the way the tablet keys them: the root id for the
     first paragraph, the id of the newline ending the previous paragraph
     for the rest."""

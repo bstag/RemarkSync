@@ -25,7 +25,7 @@ import numpy as np
 import pymupdf
 from PIL import Image
 
-from remarksync.backup import iter_docs, scan_root
+from remarksync.backup import iter_docs, scan_backup
 from remarksync.rmdata import PAGE_HEIGHT, PAGE_WIDTH
 
 from .oracle import INK_LEVEL, Pairing, contact_sheet, render_paper
@@ -40,7 +40,7 @@ SUSPECTS = ["Kemplay Dissertation Notebook", "Quick sheets", "Master to-do list"
 
 
 def documents() -> dict[str, object]:
-    return {doc.name: doc for doc in iter_docs(scan_root(RAW))}
+    return {doc.name: doc for doc in iter_docs(scan_backup(RAW))}
 
 
 def fetch(names: list[str] | None = None) -> None:

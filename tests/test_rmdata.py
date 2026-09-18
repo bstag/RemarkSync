@@ -2,7 +2,7 @@
 
 import pytest
 
-from remarksync.backup import iter_docs, scan_root
+from remarksync.backup import iter_docs, scan_backup
 from remarksync.rmdata import PAGE_WIDTH, decode_page, page_text
 from rmscene import scene_items as si
 
@@ -10,7 +10,7 @@ from .conftest import INK_UUID
 
 
 def _ink_doc(backup_root):
-    docs = {d.uuid: d for d in iter_docs(scan_root(backup_root))}
+    docs = {d.uuid: d for d in iter_docs(scan_backup(backup_root))}
     return docs[INK_UUID]
 
 

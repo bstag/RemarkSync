@@ -28,7 +28,7 @@ from PySide6.QtCore import QRect
 from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
-from remarksync.backup import DocItem, PageRef, iter_docs, scan_root
+from remarksync.backup import DocItem, PageRef, iter_docs, scan_backup
 from remarksync.layout import PageFrame, lay_out
 from remarksync.rmdata import PageModel, decode_page
 from remarksync.viewer import PageCanvas, PdfUnderlay
@@ -65,7 +65,7 @@ def pair_pages(raw_root: Path, store: Path, *, notebooks_only: bool = True) -> l
     thumbnail frame uses, so those pages are not comparable this way.
     """
     pairs: list[Pairing] = []
-    for doc in iter_docs(scan_root(raw_root)):
+    for doc in iter_docs(scan_backup(raw_root)):
         thumbs = store / f"{doc.uuid}.thumbnails"
         if not thumbs.is_dir():
             continue

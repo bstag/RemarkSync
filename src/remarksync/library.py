@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .backup import DocItem, iter_docs, scan_root
+from .backup import DocItem, iter_docs, scan_backup
 from .recognize import CACHE_NAME, RecognitionCache, handwriting_extractor, tablet_conversion
 from .search import DEFAULT_EXTRACTORS, IndexReport, Progress, SearchHit, SearchIndex
 
@@ -40,7 +40,7 @@ class Library:
         self.recognition = RecognitionCache(self.root / CACHE_NAME)
         self._engine = engine
         self.handwriting = handwriting
-        self.refresh()
+        self.rescan()
 
     @property
     def handwriting(self) -> str | None:
@@ -59,9 +59,14 @@ class Library:
 
     # ------------------------------------------------------------ documents
 
-    def refresh(self) -> None:
-        """Rescan the backup folder (new, changed and deleted documents)."""
-        self.tree = scan_root(self.root)
+    def rescan(self) -> None:
+        """Read the backup folder again (new, changed and deleted documents).
+
+        Not called ``refresh``: CONTEXT.md reserves *Refresh* for bringing the
+        search index up to date, and having both on one class made the word mean
+        two things depending on which method you reached for.
+        """
+        self.tree = scan_backup(self.root)
         self._docs = {d.uuid: d for d in iter_docs(self.tree)}
 
     @property

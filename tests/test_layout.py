@@ -8,7 +8,7 @@ where the tablet put it and the canvas grows around the paper.
 import pytest
 
 from remarksync.layout import GROWTH_MARGIN, PDF_SCALE, base_page_rect, lay_out
-from remarksync.rmdata import PAGE_HEIGHT, PAGE_WIDTH, GlyphHighlight, PageModel, Stroke, TextBlock
+from remarksync.rmdata import PAGE_HEIGHT, PAGE_WIDTH, Highlight, PageModel, Stroke, TextBlock
 
 W, H = PAGE_WIDTH, PAGE_HEIGHT
 
@@ -98,7 +98,7 @@ def test_side_overflow_shifts_paper_right_and_adds_dividers():
 
 
 def test_highlights_are_shifted_with_the_ink():
-    hl = GlyphHighlight(text="verse", rectangles=[(102, 1480, 380, 34)])
+    hl = Highlight(text="verse", rectangles=[(102, 1480, 380, 34)])
     page = PageModel(strokes=[stroke((-100, 10), (10, 10))], highlights=[hl])
     frame = lay_out(page)
     # left overflow shifts by the overflow plus the growth margin
@@ -165,7 +165,7 @@ def test_content_overflowing_a_base_page_grows_the_canvas():
 
 
 def test_highlights_are_shifted_with_the_base_page():
-    hl = GlyphHighlight(text="verse", rectangles=[(945, 1599, 103, 34)])
+    hl = Highlight(text="verse", rectangles=[(945, 1599, 103, 34)])
     frame = lay_out(PageModel(highlights=[hl]), base_size=(432, 576))
     px = base_page_rect((432, 576))[0]
     assert frame.page.highlights[0].rectangles[0] == pytest.approx((945 - px, 1599, 103, 34))
