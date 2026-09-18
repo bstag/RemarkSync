@@ -2,7 +2,7 @@
 
 The device offers three column widths in its text UI and records the chosen one
 as ``RootText.settings.textWidth``. Two turn up in the reference backup, 1152
-and 936; the third has never been seen, so ``KNOWN_TEXT_WIDTHS`` is incomplete
+and 936; the third has never been seen, so ``TEXT_WIDTHS`` is incomplete
 and the wrapping model has only ever been checked at 1152.
 
 A page per width, carrying the same words, settles both. The tablet's own PDF
@@ -19,7 +19,6 @@ To make the fixture, see FIXTURE_NOTE below.
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 import urllib.request
@@ -27,7 +26,7 @@ from pathlib import Path
 
 from remarksync.backup import iter_docs, scan_backup
 from remarksync.rmdata import decode_page
-from remarksync.textmetrics import KNOWN_TEXT_WIDTHS, lay_out_lines
+from remarksync.textmetrics import TEXT_WIDTHS, lay_out_lines
 
 from .compile_roundtrip import normalise
 
@@ -84,12 +83,12 @@ def read() -> None:
         print(f"{page.index + 1:5} {f'{sheet:.0f}':>12} {block.width:10.1f} {block.pos_x:8.1f} "
               f"{(sheet - block.width) / 2:7.1f} {len(block.lines):6} {len(block.text):6}")
 
-    fresh = sorted({w for w in widths} - set(KNOWN_TEXT_WIDTHS))
+    fresh = sorted({w for w in widths} - set(TEXT_WIDTHS))
     print(f"\nwidths on these pages : {sorted(set(widths))}")
-    print(f"already known         : {list(KNOWN_TEXT_WIDTHS)}")
+    print(f"already known         : {list(TEXT_WIDTHS)}")
     print(f"new                   : {fresh if fresh else 'none'}")
     if len(set(widths)) == 3:
-        print("\nAll three settings captured; KNOWN_TEXT_WIDTHS can be completed.")
+        print("\nAll three settings captured; TEXT_WIDTHS can be completed.")
 
 
 def wrap() -> None:
@@ -101,14 +100,10 @@ def wrap() -> None:
         print(f"no document called {DOC_NAME!r}; see 'read' for how to make it")
         return
 
-    request = urllib.request.Request(f"http://{HOST}/documents/", data=b"", method="POST")
-    with urllib.request.urlopen(request, timeout=60) as response:
-        listing = json.loads(response.read())
-    uuid = next((e["ID"] for e in listing if e.get("VisibleName") == DOC_NAME), None)
-    if uuid is None:
-        print(f"the tablet does not list {DOC_NAME!r} at the top level; move it out of a folder")
-        return
-
+    # the download endpoint takes a uuid, and the backup already knows it, so
+    # there is no need for the root listing -- which only covers the top level
+    # and so would miss a document filed in a folder
+    uuid = doc.uuid
     WORK.mkdir(parents=True, exist_ok=True)
     pdf_path = WORK / f"{uuid}.pdf"
     with urllib.request.urlopen(f"http://{HOST}/download/{uuid}/placeholder", timeout=180) as response:

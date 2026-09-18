@@ -111,9 +111,23 @@ Things to sanity-check against your own tablet backup on first use:
   PDF exports of two typed pages, one using every paragraph style (see
   `docs/adr/0001-page-coordinates-follow-the-tablet.md` and
   `textmetrics.py`): fonts, baselines, wrapping, indents, list markers and
-  checkboxes match the device to within a pixel, and ink anchored to text
-  lines lands where the device puts it. Wrapping uses per-character glyph
-  advances measured from the exports. The toolbar's Subheading and Bold
+  checkboxes match the device to within a pixel, and ink anchored to a text
+  block's lines lands where the device puts it. Wrapping uses per-character
+  glyph advances measured from the exports, and breaks inside a word when the
+  word alone is wider than the column, which is what the device does.
+
+  The advance table covers **23 of 62 letters and digits**. The rest — every
+  digit, most capitals, and `b c f j q u v` — fall back to one average value,
+  so a line's break point is approximate for text made largely of those.
+  Measured against the tablet's own export of three pages of mashed
+  characters: the number of lines matched on two of the three, but individual
+  breaks sat a character or two out, in both directions (`f` and `j` are
+  narrower than the fallback, `A` and `M` wider). Ordinary prose is mostly
+  measured characters, which is why a compiled document round-tripped at 32
+  of 34 lines. `tests/real/text_width.py` is the check.
+
+  The three column widths the device offers are **740, 936 and 1152** px, each
+  centred on the page, and a text block records the one it was given. The toolbar's Subheading and Bold
   share a style code and differ only in format fields rmscene skips;
   `rmformat.py` reads and writes those, so both round-trip. Fonts are
   stand-ins (Georgia, Segoe UI) for the device's own.

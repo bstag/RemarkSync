@@ -44,8 +44,10 @@ TEXT_POS_Y = 234.0
 # to choose.
 TEXT_WIDTH = 1152.0
 TEXT_POS_X = -TEXT_WIDTH / 2  # blocks are centred, so this follows the width
-# Widths seen in real files. Not exhaustive: the UI offers three.
-KNOWN_TEXT_WIDTHS = (936.0, 1152.0)
+# The three the device offers, read off pages typed at each setting on
+# software 3.27. Each is centred, so the margin follows from the sheet: on a
+# 1620 Paper Pro page they leave 440, 342 and 234 a side.
+TEXT_WIDTHS = (740.0, 936.0, 1152.0)
 # Glyphs start this far right of the box's pos_x.
 TEXT_LEFT_PAD = 15.0
 # The first line's baseline sits this far below the box's pos_y, for every style.
@@ -219,9 +221,31 @@ def uses_fallback_font(text: str) -> bool:
     return any(0x2190 <= ord(c) <= 0x25FF for c in text)
 
 
+def _break_oversized(word: str, s: Style, limit: float) -> list[str]:
+    """Split a word that will not fit a line of its own, at the last character
+    that fits, repeatedly.
+
+    The tablet does this rather than letting a word run off the page: a heading
+    of repeated 'g' in a 936 px column came back from its own export as lines of
+    27 characters, and 27 g's measure 908 px where 28 measure 942.
+    """
+    pieces: list[str] = []
+    rest = word
+    while rest and text_width(rest, s) > limit:
+        fits = 1
+        while fits < len(rest) and text_width(rest[: fits + 1], s) <= limit:
+            fits += 1
+        pieces.append(rest[:fits])
+        rest = rest[fits:]
+    if rest:
+        pieces.append(rest)
+    return pieces
+
+
 def wrap(text: str, s: Style, box_width: float = TEXT_WIDTH) -> list[str]:
-    """Break on spaces the way the tablet does: never inside a word, by the
-    measured glyph widths, keeping a line's leading whitespace."""
+    """Break the way the tablet does: between words where it can, and inside a
+    word when the word alone is wider than the column. Uses the measured glyph
+    advances, and keeps a line's leading whitespace."""
     limit = line_width(s, box_width)
     stripped = text.lstrip(" ")
     lead = text[: len(text) - len(stripped)]
@@ -236,6 +260,11 @@ def wrap(text: str, s: Style, box_width: float = TEXT_WIDTH) -> list[str]:
         else:
             current = lead + candidate if not started else candidate
         started = True
+        # the word may be wider than a whole line on its own, in which case no
+        # amount of breaking between words helps
+        if text_width(current, s) > limit:
+            *full, current = _break_oversized(current, s, limit)
+            out.extend(full)
     out.append(current)
     return out
 

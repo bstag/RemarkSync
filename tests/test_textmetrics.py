@@ -68,7 +68,7 @@ def test_first_baseline_and_body_pitch():
     assert lines[2].baseline - lines[1].baseline == pytest.approx(69.3, abs=0.1)
 
 
-def test_wrapping_measures_glyph_widths_and_never_breaks_a_word():
+def test_wrapping_measures_glyph_widths_and_prefers_spaces():
     from remarksync.textmetrics import text_width
 
     plain = STYLES["PLAIN"]
@@ -78,7 +78,15 @@ def test_wrapping_measures_glyph_widths_and_never_breaks_a_word():
     lines = wrap(first + " tablets \u2014 everything works from your own raw backups, no reMarkable Cloud required.", plain)
     assert lines[0] == first
     assert lines[1].startswith("tablets")
-    assert wrap("supercalifragilistic" * 20, plain) == ["supercalifragilistic" * 20]
+    # This used to assert that a 400-character run came back as one line, on the
+    # belief that the tablet never breaks inside a word. It does: the device's own
+    # export of an unbroken heading came back as several lines. So the run is
+    # broken, into pieces that each fit, losing nothing.
+    run = "supercalifragilistic" * 20
+    pieces = wrap(run, plain)
+    assert len(pieces) > 1
+    assert "".join(pieces) == run
+    assert all(text_width(piece, plain) <= 1152 for piece in pieces)
     assert wrap("", plain) == [""]
     assert wrap("    cd E:\\Source", plain) == ["    cd E:\\Source"]  # code keeps its indent
     # the heading on the styles page wrapped after "wraps"
@@ -133,3 +141,48 @@ def test_a_narrow_block_is_taller_than_a_wide_one():
 
     paragraphs = [("PLAIN", " ".join(["alpha"] * 100))]
     assert block_height(paragraphs, 936.0) > block_height(paragraphs, TEXT_WIDTH)
+
+
+def test_a_word_too_long_for_the_column_is_broken_mid_word():
+    """The tablet breaks inside a word when the word alone will not fit.
+
+    Measured on the device: a heading of repeated 'g' in a 936 px column came
+    back as six lines whose first held 27 characters. 27 g's measure 908.1 px
+    and 28 measure 941.7, so the device breaks at the last character that fits.
+    'g' is one of the characters whose advance was measured from the tablet's
+    own export, which is what makes this a real number rather than a guess.
+
+    Before this, wrap() only ever broke on spaces, so an unbroken run became a
+    single line several times wider than its column -- and since the line count
+    sets the block's height, the baselines and the compiler's pagination, the
+    error did not stay in the text.
+    """
+    from remarksync.textmetrics import text_width, wrap
+
+    heading = style("HEADING")
+    lines = wrap("g" * 60, heading, 936.0)
+    assert len(lines) > 1, "an unbreakable run must still be broken"
+    assert len(lines[0]) == 27, f"expected the device's 27 characters, got {len(lines[0])}"
+    assert all(text_width(line, heading) <= 936.0 for line in lines)
+    assert "".join(lines) == "g" * 60, "no characters may be lost or added"
+
+
+def test_breaking_mid_word_still_prefers_spaces():
+    """Character-level breaking is a last resort, not the first choice: a run
+    of ordinary words must still break between them."""
+    from remarksync.textmetrics import wrap
+
+    plain = style("PLAIN")
+    lines = wrap(" ".join(["alpha"] * 40), plain, 936.0)
+    assert all(" " in line or len(line.split()) == 1 for line in lines)
+    assert not any(line.startswith("lpha") or line.endswith("alph") for line in lines)
+
+
+def test_a_long_word_after_short_ones_breaks_without_losing_text():
+    from remarksync.textmetrics import wrap
+
+    heading = style("HEADING")
+    text = "short " + "z" * 80
+    lines = wrap(text, heading, 936.0)
+    assert " ".join(lines).replace("  ", " ").replace(" ", "") == text.replace(" ", "")
+    assert lines[0].startswith("short")
