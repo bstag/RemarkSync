@@ -186,3 +186,29 @@ def test_a_long_word_after_short_ones_breaks_without_losing_text():
     lines = wrap(text, heading, 936.0)
     assert " ".join(lines).replace("  ", " ").replace(" ", "") == text.replace(" ", "")
     assert lines[0].startswith("short")
+
+
+def test_a_line_stops_eight_px_short_of_the_declared_width():
+    """The tablet does not give text the whole box. Its own export of a heading
+    of repeated 'a' in the 740 px column put 21 on a line, where 22 measure
+    733 px and would fit a limit of 740; and in the 1152 column a line of 36
+    characters 1140 px wide stayed whole, so the limit is not far below."""
+    from remarksync.textmetrics import line_width, text_width, wrap
+
+    heading = style("HEADING")
+    assert line_width(heading, 740.0) == 732.0
+    assert text_width("a" * 22, heading) < 740.0
+    assert [len(line) for line in wrap("a" * 60, heading, 740.0)] == [21, 21, 18]
+
+    kept = "dzbgdzbgdzbgdzhgdzbgfzhdzjgfzjfgzjfg"
+    assert wrap(kept + "znv", heading, 1152.0)[0] == kept
+
+
+def test_the_inset_is_fixed_not_a_share_of_the_width():
+    """At 1152 the limit was pinned to 1143.4-1144.2. Scaled down to the 740
+    column that would be 734.7, which lets a 22nd 'a' in; the tablet refused it."""
+    from remarksync.textmetrics import line_width, text_width
+
+    heading = style("HEADING")
+    proportional = 740.0 * line_width(heading, 1152.0) / 1152.0
+    assert line_width(heading, 740.0) < text_width("a" * 22, heading) < proportional

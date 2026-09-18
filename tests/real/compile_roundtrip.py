@@ -25,6 +25,8 @@ else, and the notebook can be deleted on the device afterwards.
 Measured 2026-09-18, software 3.27 on a Paper Pro: imported (HTTP 201), came
 back as 3 pages of real text at the 1403x1873 paper the archive declares, our
 pagination preserved, and 32 of 34 lines broken exactly where we predicted.
+With the 8 px wrap inset (textmetrics.TEXT_WRAP_INSET) the same export agrees
+on all 34.
 """
 
 from __future__ import annotations

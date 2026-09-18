@@ -1,9 +1,9 @@
 """Read the tablet's three column widths, and check our wrapping at each.
 
 The device offers three column widths in its text UI and records the chosen one
-as ``RootText.settings.textWidth``. Two turn up in the reference backup, 1152
-and 936; the third has never been seen, so ``TEXT_WIDTHS`` is incomplete
-and the wrapping model has only ever been checked at 1152.
+as ``RootText.settings.textWidth``: 740, 936 or 1152. A worksheet typed at all
+three (2026-09-18) completed ``TEXT_WIDTHS`` and showed that text stops a fixed
+8 px short of the declared width at every setting.
 
 A page per width, carrying the same words, settles both. The tablet's own PDF
 export says where it broke each line; ``textmetrics`` says where we would.

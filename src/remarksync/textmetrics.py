@@ -50,6 +50,14 @@ TEXT_POS_X = -TEXT_WIDTH / 2  # blocks are centred, so this follows the width
 TEXT_WIDTHS = (740.0, 936.0, 1152.0)
 # Glyphs start this far right of the box's pos_x.
 TEXT_LEFT_PAD = 15.0
+# Text does not get the whole box: the device breaks a line 8 px short of the
+# declared width. Measured 2026-09-18 from where it broke runs of one repeated
+# character, whose advances are known: at 1152 the limit lies in (1143.4,
+# 1144.2), and at 740 below 733.4. That second bound is what says the inset is
+# a fixed 8 px and not a proportion of the width, which would put the 740 limit
+# at 734.7. The export also starts its text 4.0 px inside the box at all three
+# widths, so this reads as 4 px of padding on each side.
+TEXT_WRAP_INSET = 8.0
 # The first line's baseline sits this far below the box's pos_y, for every style.
 FIRST_BASELINE = 61.0
 
@@ -155,7 +163,7 @@ ADVANCE_SANS: dict[str, float] = {
     'z': 0.454,
 }
 ADVANCE_SERIF: dict[str, float] = {
-    ' ': 0.235, 'H': 0.727, 'R': 0.646, 'S': 0.567, 'T': 0.639, 'a': 0.521,
+    ' ': 0.235, 'H': 0.727, 'R': 0.646, 'S': 0.567, 'T': 0.639, 'a': 0.523,
     'd': 0.605, 'e': 0.507, 'g': 0.528, 'h': 0.584, 'i': 0.247, 'k': 0.538,
     'l': 0.247, 'm': 0.877, 'n': 0.584, 'o': 0.581, 'p': 0.604, 'r': 0.361,
     's': 0.456, 't': 0.333, 'w': 0.748, 'x': 0.483, 'y': 0.501, 'z': 0.478,
@@ -169,6 +177,8 @@ ADVANCE_SERIF: dict[str, float] = {
     'P': 0.588, 'Q': 0.781, 'U': 0.702, 'V': 0.674, 'W': 1.004, 'X': 0.646,
     'Y': 0.605, 'Z': 0.617, 'b': 0.605, 'c': 0.488, 'f': 0.355, 'j': 0.248,
     'q': 0.595, 'u': 0.569, 'v': 0.505,
+    # 'a' was 0.521 from the first fit; a line of 21 of them on the 740 px page
+    # measures 700.2 px, which is 0.523, and the difference decides that line.
 }
 DEFAULT_ADVANCE_SANS = 0.54
 DEFAULT_ADVANCE_SERIF = 0.52
@@ -225,7 +235,7 @@ def line_width(s: Style, box_width: float = TEXT_WIDTH) -> float:
     """Room for text on one line of this style, inside a box ``box_width``
     wide. Blocks are a fixed width but not all the same one: real files carry
     1152 and 936, each centred on the page."""
-    return box_width - s.indent
+    return box_width - TEXT_WRAP_INSET - s.indent
 
 
 def chars_per_line(s: Style) -> int:
