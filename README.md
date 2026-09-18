@@ -112,22 +112,26 @@ Things to sanity-check against your own tablet backup on first use:
   `docs/adr/0001-page-coordinates-follow-the-tablet.md` and
   `textmetrics.py`): fonts, baselines, wrapping, indents, list markers and
   checkboxes match the device to within a pixel, and ink anchored to a text
-  block's lines lands where the device puts it. Wrapping uses per-character
-  glyph advances measured from the exports, and breaks inside a word when the
+  block's lines lands where the device puts it. Wrapping uses per-glyph
+  advances measured from the exports, and breaks inside a word when the
   word alone is wider than the column, which is what the device does.
 
-  The advance table covers **23 of 62 letters and digits**. The rest — every
-  digit, most capitals, and `b c f j q u v` — fall back to one average value,
-  so a line's break point is approximate for text made largely of those.
-  Measured against the tablet's own export of three pages of mashed
-  characters: the number of lines matched on two of the three, but individual
-  breaks sat a character or two out, in both directions (`f` and `j` are
-  narrower than the fallback, `A` and `M` wider). Ordinary prose is mostly
-  measured characters, which is why a compiled document round-tripped at 32
-  of 34 lines. `tests/real/text_width.py` is the check.
+  The advance table covers **every letter and digit in both faces**, each
+  measured from the device's own rendering of a paragraph of it
+  (`tests/real/advances.py`). Two further facts came out of the same method
+  and finish the wrapping model: text stops a fixed **8 px short** of the
+  column's declared width, and a **ligature is one indivisible glyph** — the
+  serif face sets seven f-pairs as one, the sans only `fi` and `fl`, and the
+  device ends a line early rather than split one
+  (`tests/real/ligatures.py`). Against the tablet's own export, every line of
+  a compiled document and of a three-width worksheet now breaks where
+  `textmetrics` says (34 of 34 and 20 of 20). What is still unmeasured is
+  **punctuation in the serif face** — no comma, full stop, apostrophe or
+  bracket — so a heading containing them wraps on the fallback average.
 
   The three column widths the device offers are **740, 936 and 1152** px, each
-  centred on the page, and a text block records the one it was given. The toolbar's Subheading and Bold
+  centred on the page, and a text block records the one it was given;
+  `tests/real/text_width.py` checks our wrapping at all three. The toolbar's Subheading and Bold
   share a style code and differ only in format fields rmscene skips;
   `rmformat.py` reads and writes those, so both round-trip. Fonts are
   stand-ins (Georgia, Segoe UI) for the device's own.
@@ -143,10 +147,10 @@ Things to sanity-check against your own tablet backup on first use:
   interface (HTTP 201), came back from the tablet's own PDF export as three
   pages of real text — words, ligatures, not an image — at the paper the
   archive declares, with our pagination preserved and no paragraph split
-  across a break. Of 34 lines, **32 broke exactly where `textmetrics`
-  predicted**; one paragraph differed by a single word, on a line sitting
-  right at the wrap boundary. `python -m tests.real.compile_roundtrip` does
-  this end to end. Note the compiler always emits 1404x1872 pages, so on a
+  across a break. **All 34 lines broke exactly where `textmetrics`
+  predicted**, comparing glyph by glyph rather than word by word, so that a
+  ligature the export cannot name counts as the difference it is.
+  `python -m tests.real.compile_roundtrip` does this end to end. Note the compiler always emits 1404x1872 pages, so on a
   1620x2160 Paper Pro about 16% of each page goes unused and you get more
   pages than you need.
 - **.rmdoc produced by `compile`** follows the software-3.x layout
