@@ -172,3 +172,48 @@ reMarkable ──rsync over USB/Wi-Fi──►  Local store (raw xochitl UUID di
 - [remarkable.jms1.info filesystem docs](https://remarkable.jms1.info/) · [remarkable.guide SSH](https://remarkable.guide/guide/access/ssh.html) · [developer.remarkable.com developer mode](https://developer.remarkable.com/documentation/developer-mode)
 - [informaticar.net Paper Pro SSH](https://www.informaticar.net/how-to-connect-to-remarkable-paper-pro-via-ssh/) · [lizard-spock.co.uk local transfer](https://lizard-spock.co.uk/remarkable-local-file-transfer-without-the-cloud.html)
 - [reMarkable support: Desktop app](https://support.remarkable.com/s/article/Desktop-app) · [without subscription](https://support.remarkable.com/s/article/Using-reMarkable-without-a-subscription) · [importing/exporting](https://support.remarkable.com/s/article/importing-and-exporting-files)
+
+---
+
+## What SCENE_FILE_V6_DEBUG=1 actually does (software 3.27, Paper Pro, 2026-09-18)
+
+[rmscene issue #25](https://github.com/ricklupton/rmscene/issues/25) describes
+this switch as making xochitl dump pages as JSON. It does more than that, and
+the difference matters before anyone tries it.
+
+**It changes the page file, not just a side file.** A `.rm` saved with the flag
+on is the 43-byte magic, then the whole scene as JSON (~314 KB for a 21-stroke
+page), then the ordinary binary block stream. rmscene fails immediately, because
+it reads a block header at offset 43 and lands in the middle of the JSON:
+`assert unknown == 0` trips on an ASCII space. Worse, **the tablet's own PDF
+export of such a page comes back blank** — a 1403x1872 sheet with none of the
+ink, on a page whose own `SceneInfo` says 1620x2160. Re-save the page with the
+flag off before trusting it again.
+
+The `<page>.rm.tmp.json` the journal names is deleted when the save completes.
+Read the JSON out of the `.rm` instead. To find it at all, the journal is surer
+than any filename guess:
+
+```sh
+journalctl -u xochitl --since '-15 min' | grep rm.scenefile
+```
+
+**What one page of it confirmed**, which is worth having even though the switch
+is not worth keeping on:
+
+- `SceneInfo.paperSize`, `.paperSizeF` and `.lwwPaperSizeF` all read
+  `{first: 1620, second: 2160}` on a Paper Pro. Paper size is per page, is
+  stored in the file, and `lwwPaperSizeF` carries a timestamp, so it can change.
+  rmscene exposes this as `SceneInfo.paper_size`.
+- `RootText.position` is `{x: -576, y: 234}` and `RootText.settings.textWidth`
+  is an explicit stored value of `1152`. So a typed block's width is a setting,
+  not a constant, which is why `textmetrics` wraps at the block's own width.
+- `SceneInfo.extendedContentRect` exists — and is the obvious candidate for how
+  far the canvas extends past the paper — but on a page whose ink runs from
+  y=2709 to y=4048 on a 2160-tall sheet it was `{x: 0, y: 0, w: 0, h: 0}` with
+  timestamp `0:0`, i.e. never written. It is not the canvas extent, at least not
+  as this firmware fills it in.
+- `PageStats` carries `textChars` and `textLines` counts, and `MigrationInfo`
+  a `migrationId`. Neither is needed for rendering.
+- Ink points in the JSON are centre-relative in x, matching what the binary
+  format does: page x = value + paperWidth / 2.

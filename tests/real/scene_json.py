@@ -1,5 +1,22 @@
 """Compare our decode against the tablet's own JSON dump of the same page.
 
+!! Do not enable this on a device you care about. Tried on software 3.27
+(Paper Pro) on 2026-09-18, SCENE_FILE_V6_DEBUG=1 does not write a harmless
+side dump. It changes what goes into the page file itself: the .rm becomes the
+43-byte magic, then ~314 KB of JSON, then the binary block stream. Nothing
+third-party can read that -- rmscene fails on the first block header, since it
+lands in the middle of the JSON -- and neither can the tablet: its own PDF
+export of such a page came back a blank 1403x1873 sheet, with none of the 842
+ink points on it and not even the 1620x2160 paper the page declares.
+
+The .rm.tmp.json the log mentions is deleted when the save completes, so the
+JSON has to be read out of the .rm, which is what the notes below describe.
+A page left in this state should be re-saved with the flag off.
+
+What it did tell us, from one page, is recorded in
+docs/research/rmdoc-viewer-windows.md.
+
+
 Every oracle so far compares *renderings*: the desktop app's thumbnails settle
 where ink sits, the exported PDF settles how big the canvas is. Neither can say
 what the device thinks a page *contains*, which is why three explanations for
@@ -34,6 +51,11 @@ from remarksync.rmdata import decode_page
 
 HOST = os.environ.get("REMARKSYNC_TABLET_SSH", "root@10.11.99.1")
 REMOTE_DIR = "/home/root/.local/share/remarkable/xochitl"
+# What the dump is called, observed on software 3.27 (Paper Pro,
+# imx8mm-ferrari): xochitl logs "Scene written to: <page>.rm.tmp.json" beside
+# the .rm.tmp it is about to become. Being a .tmp it may not survive the save,
+# so copy it while it is there.
+DUMP_SUFFIX = ".rm.tmp.json"
 CACHE = Path(os.environ.get("REMARKSYNC_SCENE_JSON", str(Path(os.environ["TEMP"]) / "rs-scene-json")))
 
 
@@ -67,16 +89,20 @@ def steps() -> None:
     print("3. On the tablet: create a NEW notebook. Type a few lines, then")
     print("   draw ink well below the typed text so the page overflows, then")
     print("   leave the page. Leaving it is what saves it.\n")
-    print("4. Find what the save actually wrote. The dump's name and place are")
-    print("   not documented, so look three ways and ignore -metadata.json:\n")
-    print(f"     find {REMOTE_DIR} -name '*.json' ! -name '*-metadata.json' \\")
-    print("       -newermt '-15 minutes' -exec ls -l {} \\;")
-    print("     journalctl -u xochitl --since '-15 min' | grep -iE 'json|scene|debug' | tail -30")
-    print("     ls -lt /tmp/*.json 2>/dev/null | head\n")
-    print("5. Copy whatever that turns up, naming it so the page can be")
-    print("   matched afterwards:\n")
-    print(f"     mkdir -p {CACHE}")
-    print(f"     scp {HOST}:<full-path-of-dump> {CACHE}\\<doc-uuid>__<page-uuid>.json\n")
+    print("4. Find what the save wrote. Observed on 3.27 (Paper Pro): the dump")
+    print(f"   is {DUMP_SUFFIX}, a few hundred KB, beside the page:\n")
+    print(f"     ls -lt {REMOTE_DIR}/*/*{DUMP_SUFFIX} | head\n")
+    print("   The journal names it outright, which is the surer route if the")
+    print("   suffix differs on another firmware:\n")
+    print("     journalctl -u xochitl --since '-15 min' | grep rm.scenefile\n")
+    print("5. Copy it, naming it so the page can be matched afterwards. Set")
+    print("   the two uuids as variables so nothing has to be pasted twice:\n")
+    print("     DOC=e374df20-...        # the document directory")
+    print("     PAGE=62b91edb-...       # the page")
+    print("     # then, from Windows:")
+    print(f"     mkdir {CACHE}")
+    print(f"     scp {HOST}:{REMOTE_DIR}/$DOC/$PAGE{DUMP_SUFFIX} \\")
+    print(f"       {CACHE}\\${{DOC}}__${{PAGE}}.json\n")
     print("6. Pull the backup so the same revision is compared, then diff:\n")
     print("     .venv\\Scripts\\python -m remarksync pull C:\\Backups\\reMarkable\\raw")
     print("     .venv\\Scripts\\python -m tests.real.device_pdf freshness")
