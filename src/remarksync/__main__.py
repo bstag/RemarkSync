@@ -85,8 +85,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.handwriting:
             print(f"handwriting engine: {library.handwriting}")
         t0 = time.perf_counter()
-        run = library.rebuild_index if args.rebuild else library.refresh_index
-        report = run(progress=lambda name: print(f"  indexed {name}") or True)
+        report = library.refresh_index(progress=lambda name: print(f"  indexed {name}") or True,
+                                      force=args.rebuild)
         print(f"{'done' if report.completed else 'stopped'}: {report.indexed} documents indexed ({report.pages} pages), "
               f"{report.skipped} unchanged, {report.removed} removed, {time.perf_counter() - t0:.0f} s; "
               f"recognitions cached: {len(library.recognition)}")

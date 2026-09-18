@@ -85,18 +85,19 @@ class Library:
     def has_index(self) -> bool:
         return self._index.exists
 
-    def refresh_index(self, progress: Progress | None = None) -> IndexReport:
+    def refresh_index(self, progress: Progress | None = None, *, force: bool = False) -> IndexReport:
         """Index documents that are new or changed since the last run and
-        purge ones that left the library.
+        purge ones that left the library. ``force`` re-indexes every page of
+        every document instead.
 
         ``progress`` is called with each document's name once it is indexed;
         returning ``False`` stops early and the report says so.
-        """
-        return self._index.refresh(self.documents, progress)
 
-    def rebuild_index(self, progress: Progress | None = None) -> IndexReport:
-        """Index every page of every document from scratch."""
-        return self._index.refresh(self.documents, progress, force=True)
+        One entry point rather than two: a caller that has a rebuild-or-not
+        boolean in hand can pass it, instead of choosing between two methods
+        and turning the boolean back into a branch.
+        """
+        return self._index.refresh(self.documents, progress, force=force)
 
     def search(self, query: str, limit: int = 200) -> list[SearchHit]:
         """Full-text search over the index. Raises ``NoIndexError`` if the

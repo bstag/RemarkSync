@@ -116,8 +116,7 @@ class IndexWorker(QObject):
 
     def run(self) -> None:
         try:
-            refresh = self._library.rebuild_index if self._force else self._library.refresh_index
-            report = refresh(progress=self._step)
+            report = self._library.refresh_index(progress=self._step, force=self._force)
         except Exception as exc:  # keep the UI alive whatever the indexer hit
             log.exception("indexing failed")
             self.failed.emit(str(exc))

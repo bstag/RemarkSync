@@ -50,7 +50,7 @@ def test_search_before_indexing_is_an_explicit_error(backup_root):
 def test_rebuild_index_then_search(backup_root):
     lib = Library(backup_root)
     seen: list[str] = []
-    report = lib.rebuild_index(progress=lambda name: seen.append(name) or True)
+    report = lib.refresh_index(progress=lambda name: seen.append(name) or True, force=True)
     assert report.completed
     assert report.pages >= 3
     assert lib.has_index
@@ -79,7 +79,7 @@ def test_rebuild_index_can_be_cancelled(backup_root):
         calls.append(name)
         return False
 
-    report = lib.rebuild_index(progress=stop_after_first)
+    report = lib.refresh_index(progress=stop_after_first, force=True)
     assert not report.completed
     assert len(calls) == 1
     assert lib.has_index  # what was indexed is kept
