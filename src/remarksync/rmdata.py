@@ -216,8 +216,13 @@ def decode_page(source: Path | bytes) -> PageModel:
     try:
         tree = read_tree(io.BytesIO(data))
     except Exception as exc:
-        log.warning("could not parse %s: %s", source if isinstance(source, Path) else "<bytes>", exc)
-        return PageModel(error=str(exc))
+        # rmscene rejects a malformed stream with a bare assert, whose str() is
+        # empty, so the type has to carry the message or the reader is told
+        # nothing at all.
+        reason = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+        where = source.name if isinstance(source, Path) else "<bytes>"
+        log.warning("could not parse %s: %s", where, reason)
+        return PageModel(error=f"{where} is not a readable v6 page ({reason})")
     return _decode_v6(tree)
 
 

@@ -258,3 +258,19 @@ def test_a_page_without_scene_info_declares_no_paper_size():
     page = decode_page(page_rm(text="plain page"))
     assert page.error is None
     assert page.paper_size is None
+
+
+def test_a_page_that_cannot_be_decoded_says_why():
+    """``error`` is what the window shows when a page will not decode, so it has
+    to carry something a person can act on.
+
+    rmscene reports a malformed v6 stream with a bare ``assert``, whose str() is
+    empty, so the message was blank: a real page saved by firmware 3.27 with the
+    scene-dump switch on produced an error with no text at all.
+    """
+    # a v6 magic followed by bytes that are not a block stream
+    blob = b"reMarkable .lines file, version=6          " + b'{"Array": [' + b"x" * 64
+    page = decode_page(blob)
+    assert page.strokes == [] and page.texts == []
+    assert page.error, "a failed decode must report something"
+    assert "AssertionError" in page.error or len(page.error) > 12
