@@ -35,7 +35,8 @@ from . import APP_NAME, __version__
 from .backup import DocItem, open_rmdoc
 from .library import IndexReport, Library, NoIndexError
 from .mdcompile import markdown_to_rmdoc
-from .viewer import PageCanvas, PdfUnderlay, decode_frame
+from .layout import decode_frame
+from .viewer import PageCanvas, PdfUnderlay
 
 log = logging.getLogger(__name__)
 
@@ -65,21 +66,17 @@ class DecodeWorker(QObject):
     def run(self) -> None:
         pages = self._doc.pages
         order = list(range(self._start, len(pages))) + list(range(self._start - 1, -1, -1))
-        base = None
         base_pdf = self._doc.resolve_base_pdf()
+        # its own handle, because a fitz document should not be shared with the
+        # window's; PdfUnderlay.page_size touches no Qt, so it is safe here and
+        # is the one place that knows how a base page's size is read
+        underlay = PdfUnderlay(base_pdf) if base_pdf else None
         try:
-            if base_pdf:
-                import fitz
-
-                base = fitz.open(base_pdf)
             for index in order:
                 if self._cancel.is_set():
                     break
                 page = pages[index]
-                size = None
-                if base is not None and index < base.page_count:
-                    rect = base.load_page(index).rect
-                    size = (float(rect.width), float(rect.height))
+                size = underlay.page_size(index) if underlay is not None else None
                 try:
                     frame = decode_frame(page, size)
                 except Exception:  # a bad page must not stop the document
@@ -87,8 +84,8 @@ class DecodeWorker(QObject):
                     continue
                 self.decoded.emit(index, frame)
         finally:
-            if base is not None:
-                base.close()
+            if underlay is not None:
+                underlay.close()
             self.finished.emit()
 
 

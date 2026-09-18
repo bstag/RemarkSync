@@ -33,7 +33,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from .rmdata import PAGE_HEIGHT, PAGE_WIDTH, PageModel
+from .backup import PageRef
+from .rmdata import PAGE_HEIGHT, PAGE_WIDTH, PageModel, decode_page
 
 # Tablet pixels per PDF point when the tablet lays a base PDF out. Fitted
 # on 2026-09-03 from 298 snap-highlight rectangles across three PDFs
@@ -80,6 +81,23 @@ class PageFrame:
     @property
     def height(self) -> float:
         return self.canvas_size[1]
+
+
+def decode_frame(page: PageRef, base_size: tuple[float, float] | None) -> PageFrame:
+    """Decode a page and lay it out: the whole pipeline bar the painting.
+
+    This is where decode meets lay-out, and it belongs on this side of the Qt
+    line: a worker thread can call it, and the painter is handed the result
+    rather than composing it.
+    """
+    model = decode_page(page.rm_path) if page.rm_path else PageModel()
+    return lay_out(model, template=page.template, page_index=page.index, base_size=base_size)
+
+
+def placeholder_frame(page: PageRef, base_size: tuple[float, float] | None) -> PageFrame:
+    """The frame of an empty page: paper size, template or underlay, no
+    content. What a canvas shows until its page has been decoded."""
+    return lay_out(PageModel(), template=page.template, page_index=page.index, base_size=base_size)
 
 
 def base_page_rect(base_size: tuple[float, float]) -> Rect:

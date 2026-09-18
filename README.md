@@ -176,11 +176,14 @@ src/remarksync/
   rmdata.py      page decoder: .rm bytes → PageModel in page coordinates
                  (v5 and v6 adapters behind one decode_page)
   layout.py      page frame: PageModel → canvas size, paper rect, template or
-                 underlay, dividers — every layout rule, no Qt
+                 underlay, dividers — every layout rule, no Qt. Also where
+                 decode meets lay out (decode_frame), so a worker thread can
+                 build a frame without touching Qt
   textmetrics.py the tablet's text layout: paragraph styles, fonts, glyph advances,
                  baselines and wrapping (shared by decoder, compiler and painter)
   search.py      SearchIndex: SQLite FTS5, per-document refresh keyed on
-                 lastModified, extractor seam, prefix-AND queries with snippets
+                 a document's signature and the extractor set, extractor seam,
+                 prefix-AND queries with snippets
   mdcompile.py   Markdown → paginated native text pages → .rmdoc zip
   viewer.py      Qt painter: draws a PageFrame (underlay, template, highlights,
                  ink, text, dividers); computes no geometry

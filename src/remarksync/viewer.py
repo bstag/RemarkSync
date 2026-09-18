@@ -15,9 +15,9 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QWidget
 
-from .layout import PageFrame, lay_out
+from .layout import PageFrame, placeholder_frame
 from .backup import TEMPLATE_BLANK, TEMPLATE_DOTS, TEMPLATE_GRID, TEMPLATE_ISOMETRIC, TEMPLATE_RULED, DocItem, PageRef
-from .rmdata import PageModel, Stroke, decode_page
+from .rmdata import PageModel, Stroke
 from .textmetrics import (CHECKBOX_GAP, CHECKBOX_SIZE, FONT_SANS, FONT_SERIF, MARKER_GAP, TEXT_LEFT_PAD,
                           lay_out_lines, style)
 
@@ -248,24 +248,6 @@ class _PixmapCache:
 
 
 _painted_pages = _PixmapCache()
-
-
-def decode_frame(page: PageRef, base_size: tuple[float, float] | None) -> PageFrame:
-    """Decode and lay out one page: no Qt, safe to call on a worker thread."""
-    model = decode_page(page.rm_path) if page.rm_path else PageModel()
-    return lay_out(model, template=page.template, page_index=page.index, base_size=base_size)
-
-
-def frame_for(doc: DocItem, page: PageRef, underlay: PdfUnderlay | None) -> PageFrame:
-    """Decode and lay out one page of a document."""
-    base_size = underlay.page_size(page.index) if underlay is not None else None
-    return decode_frame(page, base_size)
-
-
-def placeholder_frame(page: PageRef, base_size: tuple[float, float] | None) -> PageFrame:
-    """The frame of an empty page: paper size, template or underlay, no
-    content. What a canvas shows until its page has been decoded."""
-    return lay_out(PageModel(), template=page.template, page_index=page.index, base_size=base_size)
 
 
 class PageCanvas(QWidget):
