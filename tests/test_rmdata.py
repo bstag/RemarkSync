@@ -116,7 +116,11 @@ def test_decode_v5_lines_file():
         [
             (2, 0, 2.2, [(100, 150), (140, 160), (180, 175)]),  # ballpoint
             (0, 0, 2.0, [(100, 300), (300, 320), (500, 310)]),  # id-prefixed line
-            (5, 0, 25.0, [(90, 500), (700, 500)]),  # highlighter-width line
+            # A wide, drawable stroke. This was 25.0 px, an arbitrary value
+            # chosen before the eraser rule existed; anything over
+            # V5_ERASER_WIDTH now reads as an erase, and 14 px sits in the
+            # band real files show as broad-but-drawable (9.5 to 19.75).
+            (5, 0, 14.0, [(90, 500), (700, 500)]),
         ]
     )
     page = decode_page(blob)
@@ -194,3 +198,40 @@ def test_glyph_highlights_in_page_coordinates():
     assert abs(x - 102.0) < 0.01  # -600 + 702 (centre-relative shift)
     assert abs(y - 1480.0) < 0.01  # y already from page top
     assert "verse" in page_text(page)
+
+
+def test_v5_eraser_strokes_are_not_drawn():
+    """The v5 eraser is recorded as a stroke of its own, very wide, and the
+    tablet ignores those records when it renders: whatever survived the erase
+    is already what the file still holds. Drawing them paints solid bars over
+    the surviving handwriting -- on one real page six of them were 91% of the
+    ink mass and hid four lines of text.
+    """
+    from .conftest import page_rm_v5
+
+    blob = page_rm_v5(
+        [
+            (0, 0, 2.0, [(100, 100), (200, 105), (300, 100)]),  # writing
+            (0, 0, 2.0, [(100, 300), (900, 320), (100, 340)]),  # an eraser sweep
+        ],
+        point_widths=[[3.0, 3.2, 3.0], [40.0, 40.0, 40.0]],
+    )
+    page = decode_page(blob)
+    assert len(page.strokes) == 1
+    assert page.strokes[0].points[0] == (100.0, 100.0)
+
+
+def test_v5_keeps_wide_strokes_that_are_not_eraser_wide():
+    """The eraser rule must not swallow genuinely broad pens. Measured against
+    the tablet's own PDF export, dropping everything over 8 px wrecked two
+    real pages; the erasers seen are 40 px and 57.6 px.
+    """
+    from .conftest import page_rm_v5
+
+    blob = page_rm_v5(
+        [(0, 0, 2.4, [(100, 300), (900, 320)])],
+        point_widths=[[14.0, 14.0]],
+    )
+    page = decode_page(blob)
+    assert len(page.strokes) == 1
+    assert page.strokes[0].highlighter is True  # wide but drawable

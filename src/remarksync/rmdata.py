@@ -415,10 +415,23 @@ V5_WIDTH_RANGE = (0.15, 60.0)
 # (0, 2, 5) do not line up with the classic spec, and pen 2 carries 57 px
 # strokes -- so width remains the only honest discriminator.
 V5_TRANSLUCENT_WIDTH = 8.0
+# Mean width above which a v5 stroke is the eraser rather than a pen.
+#
+# v5 records an erase as a stroke of its own, and the tablet ignores those
+# records when it renders: whatever survived the erase is already what the
+# file still holds, so drawing them paints bars over the surviving writing.
+# Pen ids cannot tell them apart, because pen 0 is both the writing pen at
+# 2.96-4.44 px and, at 40 px, the eraser; pen 2 erases at 14.4-57.6 px.
+# Width can, and the gap is wide. Fitted 2026-09-17 against the tablet's own
+# PDF export of five documents: dropping above 20 px brings our ink mass to
+# 1.045 of the device's with no page made worse, where 8 px also deleted
+# genuine broad strokes and wrecked two pages (one fell to 0.02).
+V5_ERASER_WIDTH = 20.0
 
 
-def _v5_stroke(data: bytes, offset: int, npts: int, pen: int, base_width: float, colour: int) -> Stroke:
-    """One v5 line as a Stroke, at the width stored on every point.
+def _v5_stroke(data: bytes, offset: int, npts: int, pen: int, base_width: float, colour: int) -> Stroke | None:
+    """One v5 line as a Stroke, at the width stored on every point, or
+    ``None`` when the line is an erase rather than ink.
 
     Each point carries (x, y, speed, direction, width, pressure) -- the
     field order rmscene documents for v6 -- and that width is already in
@@ -436,6 +449,8 @@ def _v5_stroke(data: bytes, offset: int, npts: int, pen: int, base_width: float,
         points.append((x, y))
         widths.append(width if low <= width <= high else base_width)
     mean = sum(widths) / len(widths) if widths else base_width
+    if mean > V5_ERASER_WIDTH:
+        return None  # an erase, not ink; see V5_ERASER_WIDTH
     return Stroke(
         points=points,
         color=PEN_COLORS.get(V5_COLORS.get(colour, "BLACK"), "#1a1a1a"),
@@ -501,7 +516,9 @@ def _decode_v5_declared(data: bytes) -> PageModel | None:
             if not 0 <= npts <= 20000 or start + npts * V5_POINT.size > size:
                 return None
             if npts:
-                page.strokes.append(_v5_stroke(data, start, npts, pen, width, colour))
+                stroke = _v5_stroke(data, start, npts, pen, width, colour)
+                if stroke is not None:
+                    page.strokes.append(stroke)
             pos = start + npts * V5_POINT.size
     return page if pos == size else None
 
@@ -547,6 +564,8 @@ def _scan_v5(data: bytes) -> PageModel:
             continue
         start, pen, width, colour, npts = line
         if npts:
-            page.strokes.append(_v5_stroke(data, start + V5_LINE.size, npts, pen, width, colour))
+            stroke = _v5_stroke(data, start + V5_LINE.size, npts, pen, width, colour)
+            if stroke is not None:
+                page.strokes.append(stroke)
         pos = start + V5_LINE.size + npts * V5_POINT.size
     return page
