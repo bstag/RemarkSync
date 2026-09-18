@@ -249,6 +249,39 @@ def iter_docs(items: list):
             yield from iter_docs(item.children)
 
 
+def device_paper_size(root: Path, sample: int = 12) -> tuple[float, float] | None:
+    """The paper the tablet that wrote this backup uses, or None if its pages
+    do not say.
+
+    Each page records its own paper size, so the backup is the only place that
+    knows what the device is without asking the device. A library can hold two,
+    one tablet having replaced another, and the larger is the one to believe:
+    the pages of the older device stay as they were, but nothing new will come
+    from it.
+
+    Newest pages first, so a handful settles it in an ordinary library rather
+    than reading every page of it -- a big backup has thousands, and each has to
+    be decoded to be asked.
+    """
+    from .rmdata import decode_page
+
+    paths = [page.rm_path for doc in iter_docs(scan_backup(root)) for page in doc.pages
+             if page.rm_path is not None]
+    paths.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+    seen: list[tuple[float, float]] = []
+    for path in paths:
+        if len(seen) >= sample:
+            break
+        try:
+            paper = decode_page(path).paper_size
+        except Exception:  # a torn page says nothing about the device
+            continue
+        if paper:
+            seen.append(tuple(paper))
+    return max(seen) if seen else None
+
+
 def safe_extract_names(names: Iterable[str], into: Path) -> None:
     """Raise unless every archive member would land inside ``into``.
 

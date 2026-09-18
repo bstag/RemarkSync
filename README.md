@@ -37,7 +37,8 @@ CLI:
 Flags worth knowing: `pull --dry-run` reports what would be fetched without
 writing anything, `--full` re-copies every document and `--prune` deletes
 local documents the tablet no longer has; `index --rebuild` re-indexes from
-scratch and `--engine` picks the handwriting engine; `compile --title` names
+scratch and `--engine` picks the handwriting engine; `compile --library` or
+`--paper WxH` compiles for a particular tablet's page size and `--title` names
 the notebook the tablet shows (it defaults to the Markdown file's name).
 
 In the window, F5 rescans the open library and Ctrl+plus / Ctrl+minus zoom
@@ -123,11 +124,18 @@ Things to sanity-check against your own tablet backup on first use:
   column's declared width, and a **ligature is one indivisible glyph** — the
   serif face sets seven f-pairs as one, the sans only `fi` and `fl`, and the
   device ends a line early rather than split one
-  (`tests/real/ligatures.py`). Against the tablet's own export, every line of
-  a compiled document and of a three-width worksheet now breaks where
-  `textmetrics` says (34 of 34 and 20 of 20). What is still unmeasured is
-  **punctuation in the serif face** — no comma, full stop, apostrophe or
-  bracket — so a heading containing them wraps on the fallback average.
+  (`tests/real/ligatures.py`). Punctuation is measured too, in both faces —
+  the serif had none of it, so a heading with a comma in it used to wrap on an
+  average twice the comma's real width. Against the tablet's own export, every
+  line of a compiled document and of a three-width worksheet now breaks where
+  `textmetrics` says (34 of 34 and 20 of 20).
+
+  What is left is **kerning**, which the model does not do: the device's
+  advance is really a number per *pair*, and the serif steps 0.237 em from one
+  comma to the next but 0.248 from a comma to a letter. Every advance recorded
+  is the step onto an ordinary letter, which is what running text asks for; the
+  residue is up to 0.06 em, about 4 px in a heading, so it takes several of
+  them on one line to move a break.
 
   The three column widths the device offers are **740, 936 and 1152** px, each
   centred on the page, and a text block records the one it was given;
@@ -150,9 +158,17 @@ Things to sanity-check against your own tablet backup on first use:
   across a break. **All 34 lines broke exactly where `textmetrics`
   predicted**, comparing glyph by glyph rather than word by word, so that a
   ligature the export cannot name counts as the difference it is.
-  `python -m tests.real.compile_roundtrip` does this end to end. Note the compiler always emits 1404x1872 pages, so on a
-  1620x2160 Paper Pro about 16% of each page goes unused and you get more
-  pages than you need.
+  `python -m tests.real.compile_roundtrip` does this end to end.
+
+  **The compiler targets your device's page.** Every reMarkable understands
+  1404x1872, and that is still the default, but a Paper Pro's page is
+  1620x2160 — a sixth taller. The GUI compiles for whatever tablet wrote the
+  open library, and the CLI takes `--library DIR` to work it out or
+  `--paper 1620x2160` to say. A page records its own size, so the backup is
+  what knows; where a library holds both (one tablet having replaced another)
+  the larger wins. Verified on the device 2026-09-18: a fixture that needs
+  three 1872 pages needs two at 2160, the tablet exports them at exactly the
+  declared size, and all 34 lines still break where predicted.
 - **.rmdoc produced by `compile`** follows the software-3.x layout
   (`<uuid>.content` with formatVersion 2, `<uuid>.metadata`,
   `<uuid>/<page-uuid>.rm` with a SceneInfo block) and imports through the
@@ -162,8 +178,9 @@ Things to sanity-check against your own tablet backup on first use:
   `- [ ]` and `- [x]` checkboxes; the text arrives styled and editable.
   Lines are never wrapped by the compiler: the tablet wraps typed text
   itself, so hard-wrapped Markdown paragraphs are joined first. Each page
-  holds about one screen of text, charged per paragraph with the room the
-  tablet gives it; a long paragraph is never split across pages.
+  holds about one page of text: each page is laid out as it fills and closed
+  when the next paragraph would not fit, so a heading costs what a heading
+  actually costs. A long paragraph is never split across pages.
 - **Search covers** document names, typed text, PDF-highlight text, and
   handwriting three ways. Pages converted to text on the tablet are
   indexed for free: "add as new page" makes a typed page, and a shared

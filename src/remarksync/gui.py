@@ -510,12 +510,16 @@ class MainWindow(QMainWindow):
         out, _ = QFileDialog.getSaveFileName(self, "Save .rmdoc as", default_out, "reMarkable document (*.rmdoc)")
         if not out:
             return
+        # compile for the device this library came off, so a Paper Pro gets its
+        # taller page instead of the smaller one every reMarkable understands
+        paper = self.library.paper_size if self.library is not None else None
         try:
-            path = markdown_to_rmdoc(Path(src).read_text(encoding="utf-8"), Path(src).stem, Path(out))
+            path = markdown_to_rmdoc(Path(src).read_text(encoding="utf-8"), Path(src).stem, Path(out), paper)
         except Exception as exc:
             self.statusBar().showMessage(f"Compile failed: {exc}")
             return
-        self.statusBar().showMessage(f"Compiled {path} — upload it via the tablet's USB web UI.")
+        for_paper = f" for {paper[0]:.0f}x{paper[1]:.0f} pages" if paper else ""
+        self.statusBar().showMessage(f"Compiled {path}{for_paper} — upload it via the tablet's USB web UI.")
 
 
     def closeEvent(self, event) -> None:  # noqa: N802

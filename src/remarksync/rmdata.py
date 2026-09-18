@@ -46,10 +46,20 @@ si.ParagraphStyle._missing_ = classmethod(_unknown_paragraph_style)
 
 log = logging.getLogger(__name__)
 
-# reMarkable 2 portrait page size in tablet pixels (Paper Pro pages render on
-# the same canvas; PageInfoBlock has no per-page size as of software 3.x).
+# reMarkable 2 portrait page size in tablet pixels. This is the default, not the
+# only one: a page's own SceneInfo carries its paper size, and a Paper Pro
+# writes 1620x2160 there. A backup can hold both, one device having replaced
+# the other -- the reference backup has 163 pages of the first and 18 of the
+# second.
 PAGE_WIDTH = 1404
 PAGE_HEIGHT = 1872
+# The papers we can name, largest last. Typed text sits in the same place on
+# either: a block's pos_y is 234 and its width is one of the same three
+# settings, with pos_x stored relative to the centre so it centres itself.
+PAPER_SIZES: dict[tuple[float, float], str] = {
+    (1404, 1872): "reMarkable 1 and 2",
+    (1620, 2160): "reMarkable Paper Pro",
+}
 
 # reMarkable accent colours (sRGB approximations of the tablet palette).
 PEN_COLORS: dict[str, str] = {

@@ -40,18 +40,45 @@ def test_pagination_fills_one_screen_per_page_without_wrapping():
 
     text = "\n".join(f"line {i}" for i in range(200))
     pages = paginate_text(text)
-    assert lines_per_page() == 22
-    assert len(pages) == 10  # 200 short paragraphs, 22 per page
-    assert all(p.count("\n") < 22 for p in pages)
+    assert lines_per_page() == 23  # 61 + 22*69.3 + a descender ends at 1827 of 1872
+    assert len(pages) == 9  # 200 short paragraphs, 23 per page
+    assert all(p.count("\n") < 23 for p in pages)
 
-    # a long paragraph is never broken, but it costs the lines it will wrap onto
-    from remarksync.textmetrics import page_text_budget, paragraph_advance
-
+    # a long paragraph is never broken, and costs the lines it wraps onto: four
+    # of these fill a page where 23 short ones do
     long = ("word " * 100).strip()  # ~500 chars -> 6 tablet lines
-    per_page = int(page_text_budget() // paragraph_advance("PLAIN", long))
-    pages = paginate_text("\n".join([long] * (per_page + 1)))
-    assert len(pages) == 2
-    assert pages[0].count("\n") == per_page - 1 and pages[1] == long
+    pages = paginate_text("\n".join([long] * 5))
+    assert [p.count("\n") + 1 for p in pages] == [4, 1]
+    assert all(paragraph == long for page in pages for paragraph in page.split("\n"))
+
+
+def test_no_page_is_filled_past_the_paper():
+    """The property that matters, and the one a per-paragraph charge got wrong:
+    a page has to fit the paper it was compiled for.
+
+    The old reckoning billed every paragraph for the space above a *body* line,
+    so a page carrying a heading was undercharged. A 1872 page broke before the
+    error could show; a Paper Pro's 2160 holds enough paragraphs that it did,
+    and the tablet grew the canvas to 2257 to fit what we had overfilled.
+    """
+    from remarksync.mdcompile import paginate
+    from remarksync.rmdata import PAPER_SIZES
+    from remarksync.textmetrics import block_height, page_block_room
+
+    # headings among the body text, which is where the charge went wrong
+    paragraphs = [("HEADING" if i % 3 == 0 else "PLAIN", f"paragraph {i} " * 4) for i in range(40)]
+
+    for paper in PAPER_SIZES:
+        room = page_block_room(paper[1])
+        pages = paginate(paragraphs, paper)
+        assert pages, paper
+        for page in pages:
+            # a page holding a single paragraph may exceed it: those never split
+            assert len(page) == 1 or block_height(page) <= room, (paper, page[0])
+        assert sum(len(page) for page in pages) == len(paragraphs)
+
+    # and the taller paper takes fewer pages for the same text
+    assert len(paginate(paragraphs, (1620, 2160))) < len(paginate(paragraphs, (1404, 1872)))
 
 
 def test_compiled_styles_round_trip_through_the_decoder():

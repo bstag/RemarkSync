@@ -39,6 +39,10 @@ def main(argv: list[str] | None = None) -> int:
     p_compile.add_argument("markdown", type=str)
     p_compile.add_argument("out", type=str)
     p_compile.add_argument("--title", default=None)
+    p_compile.add_argument("--library", default=None,
+                           help="a backup folder, to compile for the tablet that wrote it")
+    p_compile.add_argument("--paper", default=None, metavar="WxH",
+                           help="page size in tablet pixels (e.g. 1620x2160); overrides --library")
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING)
@@ -97,10 +101,31 @@ def main(argv: list[str] | None = None) -> int:
 
         from .mdcompile import markdown_to_rmdoc
 
+        from .rmdata import PAPER_SIZES
+
+        paper = None
+        if args.paper:
+            try:
+                width, height = (int(n) for n in args.paper.lower().split("x"))
+            except ValueError:
+                print(f"--paper wants a size like 1620x2160, not {args.paper!r}")
+                return 2
+            paper = (width, height)
+        elif args.library:
+            from .backup import device_paper_size
+
+            paper = device_paper_size(Path(args.library))
+            if paper is None:
+                print(f"no page in {args.library} says what paper it is; using the default")
+
         src = Path(args.markdown)
         title = args.title or src.stem
-        out = markdown_to_rmdoc(src.read_text(encoding="utf-8"), title, Path(args.out))
-        print(f"wrote {out}")
+        out = markdown_to_rmdoc(src.read_text(encoding="utf-8"), title, Path(args.out), paper)
+        if paper:
+            print(f"wrote {out} for {paper[0]:.0f}x{paper[1]:.0f} pages "
+                  f"({PAPER_SIZES.get(tuple(paper), 'an unfamiliar tablet')})")
+        else:
+            print(f"wrote {out}")
         return 0
 
     # default: GUI

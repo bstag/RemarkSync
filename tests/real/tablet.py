@@ -51,13 +51,25 @@ def upload(archive: Path, host: str = HOST, timeout: int = 300) -> str:
 def document_id(title: str, host: str = HOST, timeout: int = 60) -> str | None:
     """The id the tablet filed a document under, by its visible name. The
     listing covers the top level only, so a document filed into a folder on the
-    device will not be found -- upload lands them at the top."""
+    device will not be found -- upload lands them at the top.
+
+    Uploading the same fixture twice leaves two documents of the same name, and
+    the device does not mind. Taking the first of them means measuring the one
+    from the run before, which has happened twice and both times looked like a
+    finding rather than a mistake, so the newest wins and a duplicate is said
+    out loud.
+    """
     request = urllib.request.Request(f"http://{host}/documents/", data=b"", method="POST")
     with urllib.request.urlopen(request, timeout=timeout) as response:
-        for entry in json.loads(response.read()):
-            if entry.get("VisibleName") == title:
-                return entry.get("ID")
-    return None
+        matches = [entry for entry in json.loads(response.read())
+                   if entry.get("VisibleName") == title]
+    if not matches:
+        return None
+    matches.sort(key=lambda entry: entry.get("ModifiedClient") or "", reverse=True)
+    if len(matches) > 1:
+        print(f"   ({len(matches)} documents on the tablet are called {title!r}; "
+              f"reading the one modified {matches[0].get('ModifiedClient')}. Delete the rest.)")
+    return matches[0].get("ID")
 
 
 def export_pdf(uuid: str, into: Path, host: str = HOST, timeout: int = 300) -> Path:

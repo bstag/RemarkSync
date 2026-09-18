@@ -439,12 +439,12 @@ def block_height(paragraphs: Iterable[tuple[str, str]],
     return last.baseline + DESCENT_RATIO * style(last.style).size
 
 
-def paragraph_advance(name: str, text: str) -> float:
-    """Vertical room a paragraph takes when followed by body text: its own
-    lines plus the spacing to the next paragraph."""
-    s = style(name)
-    n = len(wrap(text, s))
-    return (n - 1) * continuation(s) + pitch(s, STYLES["PLAIN"])
+# There was a paragraph_advance() here, charging a paragraph for its own lines
+# plus the gap to the *next* one -- assumed to be body text. The compiler summed
+# it to fill a page, so a page carrying a heading was undercharged by the
+# difference between a heading's leading and a body line's, and overran. Laying
+# the page out and asking its real height (block_height) needs no such guess, so
+# the helper is gone rather than left about to be summed again.
 
 
 # -- the painter -------------------------------------------------------------
@@ -461,16 +461,24 @@ PAGE_BOTTOM_MARGIN = 24.0
 CHARS_PER_LINE = chars_per_line(STYLES["PLAIN"])  # older name
 
 
-def page_text_budget() -> float:
-    """Vertical room for text on one screen, below the first baseline."""
+def page_block_room(paper_height: float | None = None) -> float:
+    """How tall a text block may be on one page: from its pos_y to the bottom
+    margin. What the compiler has to fit a page's paragraphs into."""
     from .rmdata import PAGE_HEIGHT  # local import: rmdata imports this module
 
-    return PAGE_HEIGHT - TEXT_POS_Y - FIRST_BASELINE - PAGE_BOTTOM_MARGIN
+    height = PAGE_HEIGHT if paper_height is None else paper_height
+    return height - TEXT_POS_Y - PAGE_BOTTOM_MARGIN
 
 
-def lines_per_page() -> int:
-    """How many body paragraphs fit on one screen: 22."""
-    return int(page_text_budget() // BODY_PITCH)
+def lines_per_page(paper_height: float | None = None) -> int:
+    """How many body paragraphs fit on one page: 23 on a 1872 page, 27 on a
+    Paper Pro's 2160.
+
+    The first sits at FIRST_BASELINE and each after it a BODY_PITCH lower, with
+    the descender of the last needing to clear the bottom margin too.
+    """
+    room = page_block_room(paper_height) - FIRST_BASELINE - DESCENT_RATIO * STYLES["PLAIN"].size
+    return 1 + int(room // BODY_PITCH)
 
 
 def estimated_lines(paragraph: str, name: str = "PLAIN") -> int:

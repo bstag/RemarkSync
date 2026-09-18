@@ -8,7 +8,7 @@ surface for the model.
 import pytest
 
 from remarksync.textmetrics import (FIRST_BASELINE, STYLES, TEXT_POS_Y, block_height, chars_per_line,
-                                    lay_out_lines, lines_per_page, paragraph_advance, style, style_name, wrap)
+                                    lay_out_lines, lines_per_page, style, style_name, wrap)
 
 STYLES_PAGE = [
     ("HEADING", "Heading i think this is"),
@@ -103,9 +103,11 @@ def test_style_codes_and_unknowns():
 
 def test_block_height_and_page_budget():
     assert block_height([("PLAIN", "one line")]) == pytest.approx(FIRST_BASELINE + 0.22 * 31.9)
-    assert lines_per_page() == 22
-    assert paragraph_advance("PLAIN", "short") == pytest.approx(69.3, abs=0.1)
-    assert paragraph_advance("HEADING", "short") > paragraph_advance("PLAIN", "short")
+    assert lines_per_page() == 22 + 1  # 23: the old count forgot the first line's own room
+    assert lines_per_page(2160) == 27  # a Paper Pro page holds four more
+    # a heading takes more room than a body line, which is what a per-paragraph
+    # charge used to get wrong when it assumed body text came next
+    assert block_height([("HEADING", "h"), ("PLAIN", "p")]) > block_height([("PLAIN", "p")] * 2)
 
 
 def test_wrapping_follows_the_block_width_not_the_usual_one():

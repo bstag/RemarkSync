@@ -38,9 +38,20 @@ class Library:
         self._docs: dict[str, DocItem] = {}
         self._index = SearchIndex(self.index_path)
         self.recognition = RecognitionCache(self.root / CACHE_NAME)
+        self._paper: tuple[float, float] | None | str = "unread"
         self._engine = engine
         self.handwriting = handwriting
         self.rescan()
+
+    @property
+    def paper_size(self) -> tuple[float, float] | None:
+        """The paper the tablet that wrote this library uses, or None if its
+        pages do not say. Worked out once: it means decoding pages."""
+        if self._paper == "unread":
+            from .backup import device_paper_size
+
+            self._paper = device_paper_size(self.root)
+        return self._paper
 
     @property
     def handwriting(self) -> str | None:

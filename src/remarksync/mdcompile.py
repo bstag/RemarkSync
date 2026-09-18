@@ -30,7 +30,7 @@ from rmscene import CrdtId, LwwValue, PageInfoBlock, RootTextBlock, SceneInfo, s
 from rmscene import scene_items as si
 
 from . import rmformat
-from .rmdata import PAGE_HEIGHT, PAGE_WIDTH
+from .rmdata import PAGE_HEIGHT, PAGE_WIDTH, PAPER_SIZES
 from .textmetrics import STYLE_CODES
 
 rmformat.install()  # write the paragraph-format fields the tablet expects for subheadings
@@ -39,7 +39,7 @@ STYLE_CODE_BY_NAME = {name: code for code, name in STYLE_CODES.items()}
 
 # Text-box placement and page fill come from the shared text metrics, so the
 # compiler, the page decoder and the painter agree on where text sits.
-from .textmetrics import TEXT_POS_X, TEXT_POS_Y, TEXT_WIDTH, page_text_budget, paragraph_advance
+from .textmetrics import TEXT_POS_X, TEXT_POS_Y, TEXT_WIDTH, block_height, page_block_room
 
 _LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
 _IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
@@ -136,34 +136,46 @@ def markdown_to_text(md: str) -> str:
     return "\n".join(_MARKERS.get(style, "") + text if text else "" for style, text in markdown_to_paragraphs(md))
 
 
-def paginate(paragraphs: list[tuple[str, str]]) -> list[list[tuple[str, str]]]:
-    """Split styled paragraphs into pages of about one screen each, breaking
+def paginate(paragraphs: list[tuple[str, str]],
+             paper: tuple[float, float] | None = None) -> list[list[tuple[str, str]]]:
+    """Split styled paragraphs into pages of about one page each, breaking
     only between paragraphs. Each paragraph is charged the vertical room
     the tablet gives it (its wrapped lines plus paragraph spacing); a long
-    paragraph is never split."""
-    budget = page_text_budget()
+    paragraph is never split.
+
+    A taller paper holds more, so the page the document is bound for decides
+    where the breaks fall.
+
+    Each page is laid out as it is filled rather than charged paragraph by
+    paragraph. Charging assumes what comes next -- the old reckoning billed
+    every paragraph for the space above a *body* line -- and a heading needs far
+    more than that, so a page carrying one silently overran. On a 1872 page the
+    error stayed hidden behind the page break; a Paper Pro's 2160 fits enough
+    paragraphs for it to show, and the tablet grew the canvas to 2257 to hold
+    what we had overfilled it with.
+    """
+    room = page_block_room((paper or (PAGE_WIDTH, PAGE_HEIGHT))[1])
     pages: list[list[tuple[str, str]]] = []
     current: list[tuple[str, str]] = []
-    used = 0.0
-    for style, text in paragraphs:
-        cost = paragraph_advance(style, text)
-        if current and used + cost > budget:
+    for paragraph in paragraphs:
+        # a paragraph taller than a whole page still goes on one: the tablet
+        # wraps it, and splitting a paragraph across pages would split the text
+        if current and block_height(current + [paragraph]) > room:
             pages.append(current)
-            current, used = [], 0.0
-        current.append((style, text))
-        used += cost
+            current = []
+        current.append(paragraph)
     if current:
         pages.append(current)
     return pages or [[("PLAIN", "")]]
 
 
-def paginate_text(text: str) -> list[str]:
+def paginate_text(text: str, paper: tuple[float, float] | None = None) -> list[str]:
     """Plain-text pagination (every line a PLAIN paragraph)."""
-    pages = paginate([("PLAIN", line) for line in text.splitlines()] or [("PLAIN", "")])
+    pages = paginate([("PLAIN", line) for line in text.splitlines()] or [("PLAIN", "")], paper)
     return ["\n".join(t for _, t in page) for page in pages]
 
 
-def page_rm_bytes(paragraphs, author_uuid) -> bytes:
+def page_rm_bytes(paragraphs, author_uuid, paper: tuple[float, float] | None = None) -> bytes:
     """A software-3.x page holding one text block with per-paragraph
     styles: rmscene's simple text document (one text item whose characters
     get consecutive ids from (1, 16)), the SceneInfo block every device
@@ -200,7 +212,8 @@ def page_rm_bytes(paragraphs, author_uuid) -> bytes:
                     current_layer=LwwValue(timestamp=CrdtId(0, 14), value=CrdtId(0, 11)),
                     background_visible=LwwValue(timestamp=CrdtId(0, 15), value=True),
                     root_document_visible=LwwValue(timestamp=CrdtId(0, 16), value=True),
-                    paper_size=(PAGE_WIDTH, PAGE_HEIGHT),
+                    # whole pixels: the block writes the pair as uint32
+                    paper_size=tuple(int(n) for n in (paper or (PAGE_WIDTH, PAGE_HEIGHT))),
                 )
             )
     buf = io.BytesIO()
@@ -213,10 +226,11 @@ def _page_order_key(index: int) -> str:
     return f"b{chr(97 + index // 26)}{chr(97 + index % 26)}"
 
 
-def build_rmdoc(title: str, page_texts: list) -> bytes:
+def build_rmdoc(title: str, page_texts: list, paper: tuple[float, float] | None = None) -> bytes:
     """Assemble the .rmdoc zip the way software 3.x lays a document out:
     ``<uuid>.content`` (formatVersion 2, pages under cPages with UUID ids),
     ``<uuid>.metadata``, and one ``<uuid>/<page-uuid>.rm`` per page."""
+    width, height = paper or (PAGE_WIDTH, PAGE_HEIGHT)
     doc_uuid = str(uuidlib.uuid4())
     author_uuid = uuidlib.UUID(int=1)  # stable author id across pages
     page_ids = [str(uuidlib.uuid4()) for _ in page_texts]
@@ -238,10 +252,10 @@ def build_rmdoc(title: str, page_texts: list) -> bytes:
         },
         "coverPageNumber": -1,
         "customZoomCenterX": 0,
-        "customZoomCenterY": PAGE_HEIGHT // 2,
+        "customZoomCenterY": height // 2,
         "customZoomOrientation": "portrait",
-        "customZoomPageHeight": PAGE_HEIGHT,
-        "customZoomPageWidth": PAGE_WIDTH,
+        "customZoomPageHeight": height,
+        "customZoomPageWidth": width,
         "customZoomScale": 1,
         "documentMetadata": {},
         "extraMetadata": {},
@@ -275,12 +289,20 @@ def build_rmdoc(title: str, page_texts: list) -> bytes:
         zf.writestr(f"{doc_uuid}.content", json.dumps(content, indent=4))
         zf.writestr(f"{doc_uuid}.metadata", json.dumps(metadata, indent=4))
         for pid, chunk in zip(page_ids, page_texts):
-            zf.writestr(f"{doc_uuid}/{pid}.rm", page_rm_bytes(chunk, author_uuid))
+            zf.writestr(f"{doc_uuid}/{pid}.rm", page_rm_bytes(chunk, author_uuid, paper))
     return buf.getvalue()
 
 
-def markdown_to_rmdoc(md: str, title: str, out_path: Path) -> Path:
+def markdown_to_rmdoc(md: str, title: str, out_path: Path,
+                      paper: tuple[float, float] | None = None) -> Path:
+    """Compile Markdown into an archive for a page of ``paper``, defaulting to
+    the 1404x1872 every reMarkable understands.
+
+    Handing it the device's own paper is worth doing: a Paper Pro page is 2160
+    tall where the default is 1872, so a document bound for one otherwise leaves
+    a sixth of every page empty and runs to more pages than it needs.
+    """
     out_path = Path(out_path)
-    pages = paginate(markdown_to_paragraphs(md))
-    out_path.write_bytes(build_rmdoc(title, pages))
+    pages = paginate(markdown_to_paragraphs(md), paper)
+    out_path.write_bytes(build_rmdoc(title, pages, paper))
     return out_path
