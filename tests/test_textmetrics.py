@@ -212,3 +212,36 @@ def test_the_inset_is_fixed_not_a_share_of_the_width():
     heading = style("HEADING")
     proportional = 740.0 * line_width(heading, 1152.0) / 1152.0
     assert line_width(heading, 740.0) < text_width("a" * 22, heading) < proportional
+
+
+def test_a_ligature_is_one_glyph_and_the_faces_disagree_about_which():
+    """Measured from the tablet's export of a paragraph per pair: the serif
+    ligates seven f-pairs, the sans only fi and fl."""
+    from remarksync.textmetrics import clusters, text_width
+
+    heading, plain = style("HEADING"), style("PLAIN")
+    assert clusters("fjord", heading) == ["fj", "o", "r", "d"]
+    assert clusters("fjord", plain) == ["f", "j", "o", "r", "d"]
+    # greedy from the left, the way shaping works
+    assert clusters("fff", heading) == ["ff", "f"]
+
+    # the serif ligature is narrower than its letters apart; the sans face,
+    # which does not ligate the pair at all, is not
+    assert text_width("fj", heading) < text_width("f", heading) + text_width("j", heading)
+    assert text_width("fj", plain) == pytest.approx(text_width("f", plain) + text_width("j", plain))
+
+
+def test_a_line_break_never_splits_a_ligature():
+    """The case the three-width worksheet caught: the tablet ended a line at
+    'hjh' though another 'f' would have fitted, because the 'f' belonged to an
+    'fj' that would not."""
+    from remarksync.textmetrics import line_width, text_width, wrap
+
+    heading = style("HEADING")
+    head = "ggvggggvvvvvvvvvvvvvvvvvvhjh"
+    limit = line_width(heading, 936.0)
+    assert text_width(head + "f", heading) <= limit < text_width(head + "fj", heading)
+
+    lines = wrap(head + "fjmgf", heading, 936.0)
+    assert lines[0] == head
+    assert lines[1].startswith("fj")

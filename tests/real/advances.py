@@ -28,14 +28,14 @@ from __future__ import annotations
 import os
 import string
 import sys
-import urllib.request
 from pathlib import Path
 
 from remarksync.textmetrics import (ADVANCE_SANS, ADVANCE_SERIF, DEFAULT_ADVANCE_SANS,
                                     DEFAULT_ADVANCE_SERIF, STYLES, style)
 
+from .tablet import document_id, export_pdf, upload as post_archive
+
 WORK = Path(os.environ.get("REMARKSYNC_ADVANCES", str(Path(os.environ["TEMP"]) / "rs-advances")))
-HOST = os.environ.get("REMARKSYNC_TABLET", "10.11.99.1")
 TITLE = "RemarkSync advance scale"
 ARCHIVE = WORK / "advances.rmdoc"
 SOURCE = WORK / "advances.md"
@@ -103,39 +103,10 @@ def build() -> None:
 
 
 def upload() -> None:
-    from .compile_roundtrip import ARCHIVE as _unused  # noqa: F401  (keeps the import graph honest)
-    import mimetypes
-    import uuid as uuidlib
-
     if not ARCHIVE.exists():
         print("no archive; run 'build' first")
         return
-    boundary = f"----remarksync{uuidlib.uuid4().hex}"
-    ctype = mimetypes.guess_type(ARCHIVE.name)[0] or "application/octet-stream"
-    body = b"".join([
-        f"--{boundary}\r\n".encode(),
-        f'Content-Disposition: form-data; name="file"; filename="{ARCHIVE.name}"\r\n'.encode(),
-        f"Content-Type: {ctype}\r\n\r\n".encode(),
-        ARCHIVE.read_bytes(),
-        f"\r\n--{boundary}--\r\n".encode(),
-    ])
-    request = urllib.request.Request(
-        f"http://{HOST}/upload", data=body, method="POST",
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}",
-                 "Origin": f"http://{HOST}", "Referer": f"http://{HOST}/"})
-    with urllib.request.urlopen(request, timeout=300) as response:
-        print(f"HTTP {response.status}: {response.read(200).decode('utf-8', 'replace')}")
-
-
-def _uuid_from_tablet() -> str | None:
-    import json
-
-    request = urllib.request.Request(f"http://{HOST}/documents/", data=b"", method="POST")
-    with urllib.request.urlopen(request, timeout=60) as response:
-        for entry in json.loads(response.read()):
-            if entry.get("VisibleName") == TITLE:
-                return entry.get("ID")
-    return None
+    print(post_archive(ARCHIVE))
 
 
 def _runs_from_export(pdf_path: Path) -> list[tuple[str, int, float]]:
@@ -181,14 +152,11 @@ def _runs_from_export(pdf_path: Path) -> list[tuple[str, int, float]]:
 
 def measure() -> None:
     """Derive each character's advance from the tablet's own rendering of it."""
-    uuid = _uuid_from_tablet()
+    uuid = document_id(TITLE)
     if uuid is None:
         print(f"the tablet does not list {TITLE!r}; run 'upload' first")
         return
-    WORK.mkdir(parents=True, exist_ok=True)
-    pdf_path = WORK / f"{uuid}.pdf"
-    with urllib.request.urlopen(f"http://{HOST}/download/{uuid}/placeholder", timeout=300) as response:
-        pdf_path.write_bytes(response.read())
+    pdf_path = export_pdf(uuid, WORK)
     print(f"the tablet's export: {pdf_path.stat().st_size} bytes")
 
     plan_path = WORK / "plan.txt"

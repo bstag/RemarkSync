@@ -13,7 +13,10 @@ Three modules consume this and must agree with each other:
 
 Everything here was fitted on 2026-09-04 against the tablet's own PDF
 exports of two typed pages (a plain page with ink anchored to 60 lines,
-and a page with every paragraph style), see ADR-0001. No Qt here.
+and a page with every paragraph style), see ADR-0001. The wrapping model
+was finished on 2026-09-18 against exports written for the purpose: a
+paragraph per character for the advances, a page per column width, and a
+paragraph per letter pair for the ligatures (tests/real). No Qt here.
 """
 
 from __future__ import annotations
@@ -32,7 +35,8 @@ TEXT_POS_Y = 234.0
 # widths in its text UI, and the file records the chosen one:
 # ``RootText.settings.textWidth``, which a scene dump from software 3.27 showed
 # as an explicit 1152. Two of the three appear in the reference backup -- 1152
-# (34 blocks) and 936 (6) -- and the third has not been seen yet.
+# (34 blocks) and 936 (6) -- and the third, 740, came from a worksheet typed at
+# each setting in turn (tests/real/text_width.py).
 #
 # A block is always centred on its own page, so pos_x is -width/2 and the
 # margin follows from the sheet: 1152 on a 1404 sheet leaves 126 a side, and on
@@ -182,6 +186,26 @@ ADVANCE_SERIF: dict[str, float] = {
 }
 DEFAULT_ADVANCE_SANS = 0.54
 DEFAULT_ADVANCE_SERIF = 0.52
+# Pairs the device fonts set as a single glyph, with that glyph's advance in em.
+# Measured 2026-09-18 by tests/real/ligatures.py, which put a paragraph of each
+# f-pair on the tablet and read the glyph stream of its export back: a ligature
+# arrives as one glyph where the pair would be two. The two faces do not agree
+# about which pairs ligate -- the serif has seven, the sans only fi and fl.
+#
+# A ligature matters twice over. It is narrower than its letters apart (by about
+# 0.026 em in the serif, where ff saves 0.067), and it cannot be divided: in
+# every measured run the device ended a line rather than split one, which is why
+# the three-width worksheet put a whole 'fj' on the next line where we had left
+# the 'f' behind.
+LIGATURES_SERIF: dict[str, float] = {
+    "fb": 0.934, "ff": 0.643, "fh": 0.913, "fi": 0.576, "fj": 0.576,
+    "fk": 0.873, "fl": 0.581,
+}
+# The sans face ligates far less: fj, ff and fh are set as plain letters here.
+# ADVANCE_SANS already carried the precomposed 'ﬁ' at 0.592 from the earlier
+# fit, and this measurement of the same glyph agrees within 0.3%, which is the
+# control on the method.
+LIGATURES_SANS: dict[str, float] = {"fi": 0.594, "fl": 0.614}
 # Glyphs the device fonts lack (box drawing, arrows, geometric shapes) come
 # from a fallback font with a deeper line box: the line after such a line
 # sits 72.2 px below it instead of 69.3.
@@ -225,10 +249,40 @@ def continuation(s: Style) -> float:
     return CONTINUATION_RATIO.get(s.size, DEFAULT_CONTINUATION_RATIO) * s.size
 
 
+def ligatures(s: Style) -> dict[str, float]:
+    """The pairs this style's font sets as one glyph."""
+    return LIGATURES_SERIF if s.serif else LIGATURES_SANS
+
+
+def clusters(text: str, s: Style) -> list[str]:
+    """``text`` split into the units the device actually sets: one character
+    each, except where a pair ligates into a single glyph.
+
+    Greedy from the left, the way shaping works, so serif 'fff' is 'ff' then a
+    lone 'f'. A cluster is both the unit of width and the smallest thing a line
+    break can fall between.
+    """
+    ligs = ligatures(s)
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        pair = text[i:i + 2]
+        if pair in ligs:
+            out.append(pair)
+            i += 2
+        else:
+            out.append(text[i])
+            i += 1
+    return out
+
+
 def text_width(text: str, s: Style) -> float:
-    """Width of ``text`` in tablet px when set in the style's font."""
+    """Width of ``text`` in tablet px when set in the style's font, counting a
+    ligature as the one glyph it is rather than the letters that went into it."""
     table, default = (ADVANCE_SERIF, DEFAULT_ADVANCE_SERIF) if s.serif else (ADVANCE_SANS, DEFAULT_ADVANCE_SANS)
-    return sum(table.get(c, default) for c in text) * s.size
+    ligs = ligatures(s)
+    return sum(ligs[c] if len(c) == 2 else table.get(c, default)
+               for c in clusters(text, s)) * s.size
 
 
 def line_width(s: Style, box_width: float = TEXT_WIDTH) -> float:
@@ -250,23 +304,26 @@ def uses_fallback_font(text: str) -> bool:
 
 
 def _break_oversized(word: str, s: Style, limit: float) -> list[str]:
-    """Split a word that will not fit a line of its own, at the last character
-    that fits, repeatedly.
+    """Split a word that will not fit a line of its own, at the last glyph that
+    fits, repeatedly.
 
     The tablet does this rather than letting a word run off the page: a heading
     of repeated 'g' in a 936 px column came back from its own export as lines of
     27 characters, and 27 g's measure 908 px where 28 measure 942.
+
+    Glyph, not character: a ligature is indivisible, so a line ends before one
+    that will not fit rather than keeping its first letter back.
     """
     pieces: list[str] = []
-    rest = word
-    while rest and text_width(rest, s) > limit:
-        fits = 1
-        while fits < len(rest) and text_width(rest[: fits + 1], s) <= limit:
-            fits += 1
-        pieces.append(rest[:fits])
-        rest = rest[fits:]
-    if rest:
-        pieces.append(rest)
+    current = ""
+    for unit in clusters(word, s):
+        if current and text_width(current + unit, s) > limit:
+            pieces.append(current)
+            current = unit
+        else:
+            current += unit
+    if current:
+        pieces.append(current)
     return pieces
 
 

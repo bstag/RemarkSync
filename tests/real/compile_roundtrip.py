@@ -24,40 +24,25 @@ else, and the notebook can be deleted on the device afterwards.
 
 Measured 2026-09-18, software 3.27 on a Paper Pro: imported (HTTP 201), came
 back as 3 pages of real text at the 1403x1873 paper the archive declares, our
-pagination preserved, and 32 of 34 lines broken exactly where we predicted.
-With the 8 px wrap inset (textmetrics.TEXT_WRAP_INSET) the same export agrees
-on all 34.
+pagination preserved, and 32 of 34 lines broken exactly where we predicted. The
+8 px wrap inset (textmetrics.TEXT_WRAP_INSET) took that to 34 of 34, and the
+comparison is now made glyph by glyph rather than word by word, so a ligature
+the export cannot name no longer reads as agreement it has not earned.
 """
 
 from __future__ import annotations
 
-import mimetypes
 import os
 import sys
-import urllib.error
-import urllib.request
-import uuid as uuidlib
 from pathlib import Path
 
+from .exported import compare, drawn_lines
+from .tablet import document_id, export_pdf, upload as post_archive
+
 WORK = Path(os.environ.get("REMARKSYNC_ROUNDTRIP", str(Path(os.environ["TEMP"]) / "rs-roundtrip")))
-HOST = os.environ.get("REMARKSYNC_TABLET", "10.11.99.1")
 TITLE = "RemarkSync compile test"
 SOURCE = Path(__file__).with_name("compile_fixture.md")
 ARCHIVE = WORK / "remarksync-compile-test.rmdoc"
-
-# The list markers the device draws into the same row as the text, and the
-# ligatures its PDF carries as one glyph. Neither is a wrapping difference.
-MARKERS = ("\u2022 ", "\u25e6 ", "1. ", "a. ", "\u2610 ", "\u2611 ")
-LIGATURES = (("\ufb01", "fi"), ("\ufb02", "fl"), ("\ufb00", "ff"))
-
-
-def normalise(line: str) -> str:
-    for lig, plain in LIGATURES:
-        line = line.replace(lig, plain)
-    for marker in MARKERS:
-        if line.startswith(marker):
-            line = line[len(marker):]
-    return line.strip()
 
 
 def build() -> None:
@@ -82,41 +67,10 @@ def build() -> None:
 
 
 def upload() -> None:
-    """POST the archive the way the web interface does: one multipart part
-    named 'file'. Its own code accepts pdf, rmdoc and epub."""
     if not ARCHIVE.exists():
         print("no archive yet; run 'build' first")
         return
-    boundary = f"----remarksync{uuidlib.uuid4().hex}"
-    content_type = mimetypes.guess_type(ARCHIVE.name)[0] or "application/octet-stream"
-    body = b"".join([
-        f"--{boundary}\r\n".encode(),
-        f'Content-Disposition: form-data; name="file"; filename="{ARCHIVE.name}"\r\n'.encode(),
-        f"Content-Type: {content_type}\r\n\r\n".encode(),
-        ARCHIVE.read_bytes(),
-        f"\r\n--{boundary}--\r\n".encode(),
-    ])
-    request = urllib.request.Request(
-        f"http://{HOST}/upload", data=body, method="POST",
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}",
-                 "Origin": f"http://{HOST}", "Referer": f"http://{HOST}/"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=180) as response:
-            print(f"HTTP {response.status}: {response.read(200).decode('utf-8', 'replace')}")
-    except urllib.error.HTTPError as exc:
-        print(f"HTTP {exc.code}: {exc.read(400).decode('utf-8', 'replace')}")
-
-
-def _find_uploaded() -> str | None:
-    import json
-
-    request = urllib.request.Request(f"http://{HOST}/documents/", data=b"", method="POST")
-    with urllib.request.urlopen(request, timeout=60) as response:
-        for entry in json.loads(response.read()):
-            if entry.get("VisibleName") == TITLE:
-                return entry.get("ID")
-    return None
+    print(post_archive(ARCHIVE))
 
 
 def check() -> None:
@@ -126,14 +80,13 @@ def check() -> None:
     from remarksync.backup import open_rmdoc
     from remarksync.layout import PDF_SCALE
     from remarksync.rmdata import decode_page
+    from remarksync.textmetrics import style
 
-    uuid = _find_uploaded()
+    uuid = document_id(TITLE)
     if uuid is None:
         print(f"the tablet has no document called {TITLE!r}; run 'upload' first")
         return
-    pdf_path = WORK / f"{uuid}.pdf"
-    with urllib.request.urlopen(f"http://{HOST}/download/{uuid}/placeholder", timeout=180) as response:
-        pdf_path.write_bytes(response.read())
+    pdf_path = export_pdf(uuid, WORK)
     print(f"the tablet's export: {pdf_path.stat().st_size} bytes")
 
     doc = open_rmdoc(ARCHIVE, extract_dir=WORK / "extract")
@@ -145,22 +98,14 @@ def check() -> None:
             if page_ref.index >= pdf.page_count:
                 break
             model = decode_page(page_ref.rm_path)
-            ours = [ln.text for ln in model.texts[0].lines if ln.text.strip()]
+            ours = [(style(ln.style), ln.text) for ln in model.texts[0].lines if ln.text.strip()]
             page = pdf.load_page(page_ref.index)
-            rows: dict[int, list] = {}
-            for x0, _y0, _x1, y1, word, *_ in page.get_text("words"):
-                rows.setdefault(round(y1), []).append((x0, word))
-            theirs = [" ".join(w for _, w in sorted(v)) for _, v in sorted(rows.items())]
+            theirs = drawn_lines(pdf, page_ref.index)
             print(f"\npage {page_ref.index + 1}: {page.rect.width * PDF_SCALE:.0f}x"
-                  f"{page.rect.height * PDF_SCALE:.0f} px, we predict {len(ours)} lines, "
-                  f"the tablet drew {len(theirs)}")
-            for i in range(min(len(ours), len(theirs))):
-                compared += 1
-                if normalise(ours[i]) == normalise(theirs[i]):
-                    agreed += 1
-                else:
-                    print(f"   !! ours   {normalise(ours[i])[:74]!r}")
-                    print(f"   !! tablet {normalise(theirs[i])[:74]!r}")
+                  f"{page.rect.height * PDF_SCALE:.0f} px")
+            a, c = compare(ours, theirs, f"page {page_ref.index + 1}")
+            agreed += a
+            compared += c
     print(f"\nlines broken where we predicted: {agreed} of {compared}")
 
 

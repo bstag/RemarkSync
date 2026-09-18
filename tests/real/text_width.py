@@ -3,7 +3,9 @@
 The device offers three column widths in its text UI and records the chosen one
 as ``RootText.settings.textWidth``: 740, 936 or 1152. A worksheet typed at all
 three (2026-09-18) completed ``TEXT_WIDTHS`` and showed that text stops a fixed
-8 px short of the declared width at every setting.
+8 px short of the declared width at every setting. Its last disagreement was a
+ligature the device would not split; with that in the model, all 20 of its lines
+break where we say.
 
 A page per width, carrying the same words, settles both. The tablet's own PDF
 export says where it broke each line; ``textmetrics`` says where we would.
@@ -21,32 +23,32 @@ from __future__ import annotations
 
 import os
 import sys
-import urllib.request
 from pathlib import Path
 
 from remarksync.backup import iter_docs, scan_backup
 from remarksync.rmdata import decode_page
-from remarksync.textmetrics import TEXT_WIDTHS, lay_out_lines
+from remarksync.textmetrics import TEXT_WIDTHS, lay_out_lines, style
 
-from .compile_roundtrip import normalise
+from .exported import compare, drawn_lines
+from .tablet import export_pdf
 
 RAW = Path(os.environ.get("REMARKSYNC_REAL_BACKUP", r"C:\Backups\reMarkable\raw"))
-HOST = os.environ.get("REMARKSYNC_TABLET", "10.11.99.1")
 WORK = Path(os.environ.get("REMARKSYNC_ROUNDTRIP", str(Path(os.environ["TEMP"]) / "rs-roundtrip")))
-DOC_NAME = os.environ.get("REMARKSYNC_WIDTH_DOC", "Width test")
+# The worksheet that was actually typed, on 2026-09-18. Override it if you make
+# another; the fixture note below says what has to be on it.
+DOC_NAME = os.environ.get("REMARKSYNC_WIDTH_DOC", "Test bob")
 
 FIXTURE_NOTE = """\
-On the tablet, make a notebook called 'Width test' with three typed pages.
-Set the column width control to a different one of its three settings on each
-page, and type the same two sentences on all three:
+On the tablet, make a notebook of three typed pages and name it here (see
+DOC_NAME). Set the column width control to a different one of its three
+settings on each page, and type the same two sentences on all three:
 
     The first flight of five finches flew off in fine drifting fog.
     A quiet brown pony walked past the open gate and waited by the wall.
 
-The first sentence is deliberately full of fi and fl pairs, because the device
-sets those as single ligature glyphs and we measure them as two -- which is the
-leading suspect for the one line in thirty-four that the compiler round-trip
-broke differently. The second is plain, as a control.
+The first sentence is deliberately full of f-pairs, because the device sets
+several of them as single ligature glyphs and will not break a line inside one
+(see textmetrics.LIGATURES_SERIF). The second is plain, as a control.
 
 Then pull the backup so the pages are here to read:
 
@@ -103,11 +105,7 @@ def wrap() -> None:
     # the download endpoint takes a uuid, and the backup already knows it, so
     # there is no need for the root listing -- which only covers the top level
     # and so would miss a document filed in a folder
-    uuid = doc.uuid
-    WORK.mkdir(parents=True, exist_ok=True)
-    pdf_path = WORK / f"{uuid}.pdf"
-    with urllib.request.urlopen(f"http://{HOST}/download/{uuid}/placeholder", timeout=180) as response:
-        pdf_path.write_bytes(response.read())
+    pdf_path = export_pdf(doc.uuid, WORK)
 
     total = agreed = 0
     with pymupdf.open(pdf_path) as pdf:
@@ -119,23 +117,12 @@ def wrap() -> None:
                 continue
             block = model.texts[0]
             # lay the same paragraphs out at the width the file declares
-            ours = [ln.text for ln in lay_out_lines(block.paragraphs, block.width) if ln.text.strip()]
-
-            rendered = pdf.load_page(page.index)
-            rows: dict[int, list] = {}
-            for x0, _y0, _x1, y1, word, *_ in rendered.get_text("words"):
-                rows.setdefault(round(y1), []).append((x0, word))
-            theirs = [" ".join(w for _, w in sorted(v)) for _, v in sorted(rows.items())]
-
-            print(f"\npage {page.index + 1}, width {block.width:.0f}: "
-                  f"we predict {len(ours)} lines, the tablet drew {len(theirs)}")
-            for i in range(min(len(ours), len(theirs))):
-                total += 1
-                if normalise(ours[i]) == normalise(theirs[i]):
-                    agreed += 1
-                else:
-                    print(f"   !! ours   {normalise(ours[i])[:74]!r}")
-                    print(f"   !! tablet {normalise(theirs[i])[:74]!r}")
+            ours = [(style(ln.style), ln.text)
+                    for ln in lay_out_lines(block.paragraphs, block.width) if ln.text.strip()]
+            print(f"\npage {page.index + 1}, width {block.width:.0f}:")
+            a, c = compare(ours, drawn_lines(pdf, page.index), f"page {page.index + 1}")
+            agreed += a
+            total += c
     print(f"\nlines broken where we predicted: {agreed} of {total}")
 
 
