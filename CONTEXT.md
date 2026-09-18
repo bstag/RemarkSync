@@ -46,9 +46,11 @@ re-centred or pulled to a margin.
 _Avoid_: normalised coordinates, raw coordinates, screen units
 
 **Paper**:
-The tablet's page rectangle (1404 by 1872 pixels). Content may extend past it
-on any side.
-_Avoid_: page bounds, viewport
+The tablet's page rectangle, and not one size: 1404 by 1872 pixels on a
+reMarkable 1 or 2, 1620 by 2160 on a Paper Pro. Each page records its own, so
+a library that has seen both tablets holds both. Content may extend past it on
+any side.
+_Avoid_: page bounds, viewport, screen size
 
 **Page frame**:
 Where a page lands on a canvas: the canvas size, where the paper sits, what
@@ -95,7 +97,31 @@ _Avoid_: snap highlight, glyph range, annotation
 
 **Text metrics**:
 The shared facts about typed text: how tall each paragraph style is, where a
-text block sits by default, and how the painter sizes its font.
+text block sits by default, how wide each glyph is, and how the painter sizes
+its font. Every number in it was measured from the tablet's own PDF exports
+rather than chosen.
+
+**Column width**:
+How wide a text block is. A setting rather than a constant: the device offers
+740, 936 and 1152 pixels and the block records which it was given. A block is
+centred on its page, so the margin follows from the paper.
+_Avoid_: text width (the property is called that in the file), line length
+
+**Advance**:
+How far the device moves along after setting a glyph — its width for the
+purpose of wrapping, in ems of the font size. Measured as the step between two
+glyph origins in an export.
+_Avoid_: glyph width, character width
+
+**Ligature**:
+A pair of letters the font sets as a single glyph, narrower than the two apart.
+Indivisible: the device ends a line early rather than break inside one. The two
+faces disagree about which pairs are ligatures.
+
+**Kerning**:
+The advance depending on which glyph comes next, so that a comma takes one
+width before a letter and another before a comma. Real in both faces and not
+modelled: an advance is recorded as the step onto an ordinary letter.
 
 ### Search
 
@@ -137,5 +163,14 @@ _Avoid_: match, result row
 
 **Compile**:
 Turning a Markdown file into an archive whose pages hold editable text blocks
-the tablet can open.
+the tablet can open. The compiler never wraps or breaks a paragraph: it hands
+whole paragraphs over and the device wraps them, which is why the text metrics
+have to predict the device's line breaks rather than impose our own.
 _Avoid_: convert, export, render
+
+**Target paper**:
+The paper a compiled archive is built for. Worth knowing because a taller page
+holds more, so it decides where the page breaks fall. Taken from the library
+being compiled against — the tablet that wrote it — and the larger where a
+library has seen two tablets.
+_Avoid_: page size, device size
