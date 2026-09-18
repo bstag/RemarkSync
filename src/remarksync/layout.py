@@ -41,8 +41,16 @@ from .rmdata import PAGE_HEIGHT, PAGE_WIDTH, PageModel
 # 157 mm wide screen (1404 px / (157 mm / 25.4 * 72 pt) = 3.155).
 PDF_SCALE = 3.1527
 
-# Breathing room kept below the lowest content on an overflowing canvas.
-BOTTOM_MARGIN = 24.0
+# Breathing room kept beyond the furthest content on an overflowing canvas.
+#
+# Fitted 2026-09-17 against the page box of the tablet's own PDF export, on
+# the three pages that overflow and carry no typed text: they need 47.8, 45.5
+# and 46.6 px. At 47 the worst page is out by 2 px and at 47.29 by 1.8, both
+# inside the +/-3 px the export's whole-point rounding is worth, so the
+# evidence does not separate them. 47.29 px is 15 pt exactly, which is
+# probably the unit the device works in; 47 is kept because this constant is
+# in tablet pixels and should not be defined through PDF_SCALE.
+GROWTH_MARGIN = 47.0
 
 Rect = tuple[float, float, float, float]  # x, y, w, h
 Segment = tuple[tuple[float, float], tuple[float, float]]
@@ -107,13 +115,17 @@ def lay_out(
         paper = (0.0, 0.0, float(sheet[0]), float(sheet[1]))
     px, py, pw, ph = paper
 
+    # The tablet scrolls down and sideways without limit but never extends
+    # above the paper top: content up there is clipped, not given canvas. So
+    # the canvas grows on three sides only, and only once content actually
+    # passes an edge, each grown side gaining GROWTH_MARGIN.
     xs, ys = _extent(page)
-    x_min = min([px] + xs)
-    y_min = min([py] + ys)
-    x_max = max([px + pw] + xs)
-    y_max = max([py + ph] + [y + BOTTOM_MARGIN for y in ys])
-    # move everything so the canvas starts at the top-left of whatever is
-    # there (paper or overflowing content); avoid -0.0 origins
+    x_min = min(px, min(xs) - GROWTH_MARGIN) if xs and min(xs) < px else px
+    x_max = max(px + pw, max(xs) + GROWTH_MARGIN) if xs and max(xs) > px + pw else px + pw
+    y_max = max(py + ph, max(ys) + GROWTH_MARGIN) if ys and max(ys) > py + ph else py + ph
+    y_min = py  # the top never moves
+
+    # shift so the canvas starts at zero; avoid -0.0 origins
     dx = -x_min if x_min else 0.0
     dy = -y_min if y_min else 0.0
 

@@ -7,7 +7,7 @@ where the tablet put it and the canvas grows around the paper.
 
 import pytest
 
-from remarksync.layout import BOTTOM_MARGIN, PDF_SCALE, base_page_rect, lay_out
+from remarksync.layout import GROWTH_MARGIN, PDF_SCALE, base_page_rect, lay_out
 from remarksync.rmdata import PAGE_HEIGHT, PAGE_WIDTH, GlyphHighlight, PageModel, Stroke, TextBlock
 
 W, H = PAGE_WIDTH, PAGE_HEIGHT
@@ -59,7 +59,7 @@ def test_bottom_overflow_grows_canvas_and_marks_paper_edge():
     page = PageModel(strokes=[stroke((100, 2100), (400, 2200), (700, 2400))])
     frame = lay_out(page, template="ruled", page_index=0)
     assert frame.page.strokes[0].points[0] == (100, 2100)  # untouched
-    assert frame.height == 2400 + BOTTOM_MARGIN
+    assert frame.height == 2400 + GROWTH_MARGIN
     assert frame.width == W
     assert frame.paper == (0, 0, W, H)
     assert frame.dividers == [((0, H), (W, H))]
@@ -75,31 +75,35 @@ def test_side_overflow_shifts_paper_right_and_adds_dividers():
     # ink from x=-498 (left of the paper) to x=1802 (right of it)
     page = PageModel(strokes=[stroke((-498, 100), (1802, 200))])
     frame = lay_out(page)
-    assert frame.origin == (498, 0)
-    assert frame.paper == (498, 0, W, H)
-    assert frame.width == 1802 + 498
+    # each side that grows also gains the growth margin
+    left = 498 + GROWTH_MARGIN
+    right = 1802 + GROWTH_MARGIN
+    assert frame.origin == (left, 0)
+    assert frame.paper == (left, 0, W, H)
+    assert frame.width == right + left
     assert frame.height == H
-    assert frame.page.strokes[0].points[0] == (0, 100)  # shifted onto the canvas
-    assert frame.page.strokes[0].points[1] == (1802 + 498, 200)
-    assert ((498, 0), (498, H)) in frame.dividers
-    assert ((498 + W, 0), (498 + W, H)) in frame.dividers
+    assert frame.page.strokes[0].points[0] == (GROWTH_MARGIN, 100)  # shifted onto the canvas
+    assert frame.page.strokes[0].points[1] == (right + left - GROWTH_MARGIN, 200)
+    assert ((left, 0), (left, H)) in frame.dividers
+    assert ((left + W, 0), (left + W, H)) in frame.dividers
     assert len(frame.dividers) == 2
 
 
-def test_top_overflow_shifts_paper_down():
-    page = PageModel(strokes=[stroke((100, -300), (200, 50))])
-    frame = lay_out(page)
-    assert frame.origin == (0, 300)
-    assert frame.page.strokes[0].points[0] == (100, 0)
-    assert frame.height == H + 300
-    assert frame.dividers == [((0, 300), (W, 300))]
+# test_top_overflow_shifts_paper_down used to live here. It asserted that
+# content above the paper shifted the paper down and grew the canvas upward.
+# The tablet does not do that: it scrolls down and sideways without limit but
+# clips at the top, which its own PDF export confirms -- a page whose ink
+# reaches y = -83.7 still exports at exactly paper height. The behaviour is
+# now covered by test_the_canvas_never_grows_above_the_paper_top.
 
 
 def test_highlights_are_shifted_with_the_ink():
     hl = GlyphHighlight(text="verse", rectangles=[(102, 1480, 380, 34)])
     page = PageModel(strokes=[stroke((-100, 10), (10, 10))], highlights=[hl])
     frame = lay_out(page)
-    assert frame.page.highlights[0].rectangles == [(202, 1480, 380, 34)]
+    # left overflow shifts by the overflow plus the growth margin
+    shift = 100 + GROWTH_MARGIN
+    assert frame.page.highlights[0].rectangles == [(102 + shift, 1480, 380, 34)]
 
 
 # ------------------------------------------------------------- base pages
@@ -152,8 +156,8 @@ def test_content_overflowing_a_base_page_grows_the_canvas():
     px, py, pw, ph = base_page_rect((432, 576))
     page = PageModel(strokes=[stroke((1500, 100), (1700, ph + 200))])
     frame = lay_out(page, base_size=(432, 576))
-    assert frame.width == pytest.approx(1700 - px)
-    assert frame.height == pytest.approx(ph + 200 + BOTTOM_MARGIN)
+    assert frame.width == pytest.approx(1700 + GROWTH_MARGIN - px)
+    assert frame.height == pytest.approx(ph + 200 + GROWTH_MARGIN)
     assert ((pw, 0), (pw, ph)) in [tuple(map(tuple, d)) for d in frame.dividers] or any(
         abs(d[0][0] - pw) < 1e-6 for d in frame.dividers
     )
@@ -193,4 +197,46 @@ def test_a_declared_paper_still_grows_for_overflowing_content():
     page = PageModel(strokes=[stroke((100, 100), (1700, 200))], paper_size=(1620, 2160))
     frame = lay_out(page)
     assert frame.paper == (0.0, 0.0, 1620.0, 2160.0)
-    assert frame.canvas_size[0] == 1700.0
+    assert frame.canvas_size[0] == 1700.0 + GROWTH_MARGIN
+
+
+def test_the_canvas_never_grows_above_the_paper_top():
+    """The tablet scrolls down without limit but does not extend upwards, so
+    content above the paper top is clipped rather than given canvas.
+
+    Measured against the tablet's own PDF export: a page whose ink reaches
+    y = -83.7 still exports at exactly paper height.
+    """
+    page = PageModel(strokes=[stroke((300, -80), (400, 200))])
+    frame = lay_out(page)
+    assert frame.canvas_size == (W, H)
+    assert frame.paper == (0.0, 0.0, W, H)
+    # content keeps its own coordinates; the part above the paper is clipped
+    assert min(y for _, y in frame.page.strokes[0].points) == -80.0
+
+
+def test_content_inside_the_paper_does_not_grow_the_canvas():
+    """A stroke close to the bottom edge but still on the paper must not push
+    the canvas out. Two real pages end at y = 1871.5 and export paper height.
+    """
+    frame = lay_out(PageModel(strokes=[stroke((300, 1871), (400, 1871.5))]))
+    assert frame.canvas_size == (W, H)
+    assert frame.dividers == []
+
+
+def test_overflowing_content_grows_by_the_measured_margin():
+    """Past the paper edge the canvas grows to the content plus a margin.
+    Fitted against the export on the three pages that grow downwards only:
+    they need 47.8, 45.5 and 46.6 px, and the exported box is rounded to
+    whole points, worth about 3 px.
+    """
+    frame = lay_out(PageModel(strokes=[stroke((300, 100), (400, 2000))]))
+    assert frame.canvas_size == (W, 2000.0 + GROWTH_MARGIN)
+
+
+def test_growing_sideways_shifts_the_paper_and_keeps_the_top():
+    """Left overflow moves the paper right so the canvas starts at zero, and
+    the vertical origin is untouched because the top never grows."""
+    frame = lay_out(PageModel(strokes=[stroke((-100, 500), (200, 600))]))
+    assert frame.paper == (100.0 + GROWTH_MARGIN, 0.0, W, H)
+    assert frame.canvas_size == (W + 100.0 + GROWTH_MARGIN, H)
