@@ -92,8 +92,8 @@ def conversion_signature(doc: DocItem) -> str:
 
     The device writes a conversion beside a document *without* touching that
     document's metadata (see :mod:`remarksync.pull`), so anything keyed on
-    ``lastModified`` alone cannot tell that new text has arrived. Each file's
-    name, size and mtime is enough to notice one appearing or changing.
+    ``lastModified`` alone cannot tell that new text has arrived. Content
+    hashes also notice replacements that preserve size and timestamps.
     """
     folder = _conversion_dir(doc)
     if folder is None:
@@ -101,10 +101,10 @@ def conversion_signature(doc: DocItem) -> str:
     parts = []
     for path in sorted(folder.glob("*.json")):
         try:
-            stat = path.stat()
+            content = path.read_bytes()
         except OSError:  # vanished mid-scan; treat it as absent
             continue
-        parts.append(f"{path.name}:{stat.st_size}:{int(stat.st_mtime)}")
+        parts.append(f"{path.name}:{hashlib.sha256(content).hexdigest()}")
     return ";".join(parts)
 
 
@@ -183,8 +183,10 @@ def stroke_hash(model: PageModel) -> str:
     re-recognised."""
     h = hashlib.sha1()
     for s in model.strokes:
-        if s.highlighter:
+        if s.highlighter or not s.layer_visible:
             continue
+        h.update(f"{s.width:.3f}:{s.tool}|".encode())
+        h.update(",".join(f"{w:.3f}" for w in s.widths).encode())
         for x, y in s.points:
             h.update(f"{x:.1f},{y:.1f};".encode())
         h.update(b"|")
@@ -268,7 +270,7 @@ def _reading_order(words: list[RecognisedWord]) -> list[RecognisedWord]:
 
 def ink_strokes(model: PageModel) -> list[list[tuple[float, float]]]:
     """The strokes worth recognising: pen strokes, not highlighter bands."""
-    return [list(s.points) for s in model.strokes if not s.highlighter and len(s.points) >= 2]
+    return [list(s.points) for s in model.strokes if s.layer_visible and not s.highlighter and len(s.points) >= 2]
 
 
 class WindowsInkService:

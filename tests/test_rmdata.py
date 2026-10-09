@@ -200,6 +200,34 @@ def test_glyph_highlights_in_page_coordinates():
     assert "verse" in page_text(page)
 
 
+def test_yellow_glyph_with_opaque_black_placeholder_retains_palette_color():
+    from .conftest import page_rm
+
+    # Matches all five glyph ranges in the confirmed live tablet edit.
+    glyph = si.GlyphRange(start=0, length=4, text="note", color=si.PenColor.YELLOW,
+                         rectangles=[si.Rectangle(-100, 200, 100, 30)], color_rgba=(0, 0, 0, 255))
+    highlight = decode_page(page_rm(glyphs=[glyph])).highlights[0]
+    assert highlight.color == "#f2b800"
+    assert highlight.alpha == pytest.approx(95 / 255)
+
+
+@pytest.mark.parametrize("palette, rgba, expected, alpha", [
+    (si.PenColor.HIGHLIGHT, (0, 0, 0, 255), "#000000", 95 / 255),
+    (si.PenColor.GRAY, (0, 0, 0, 255), "#000000", 95 / 255),
+    (si.PenColor.YELLOW, (190, 234, 254, 255), "#beeafe", 95 / 255),
+    (si.PenColor.YELLOW, (0, 0, 0, 64), "#000000", 64 / 255),
+    (si.PenColor.YELLOW, (255, 244, 160, 255), "#fff4a0", 95 / 255),
+])
+def test_glyph_custom_rgba_and_partial_alpha_are_preserved(palette, rgba, expected, alpha):
+    from .conftest import page_rm
+
+    glyph = si.GlyphRange(start=0, length=4, text="note", color=palette,
+                         rectangles=[si.Rectangle(-100, 200, 100, 30)], color_rgba=rgba)
+    highlight = decode_page(page_rm(glyphs=[glyph])).highlights[0]
+    assert highlight.color == expected
+    assert highlight.alpha == pytest.approx(alpha)
+
+
 def test_v5_eraser_strokes_are_not_drawn():
     """The v5 eraser is recorded as a stroke of its own, very wide, and the
     tablet ignores those records when it renders: whatever survived the erase

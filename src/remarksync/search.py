@@ -8,7 +8,7 @@ need (re)indexing, how a page becomes searchable text, and querying.
   changed or new ones re-extracted, vanished ones purged. ``force=True``
   is the full rebuild.
 * **What counts as changed.** A document's signature is its ``lastModified``
-  from its ``.metadata`` *plus* the tablet's own text conversions, because
+  plus content/page/scene hashes and the tablet's own text conversions, because
   the device writes those beside a document without touching its metadata
   and they would otherwise stay invisible. A document with no
   ``lastModified`` has no signature and is always re-read.
@@ -32,14 +32,16 @@ keeps every document finished before it. No Qt dependencies here.
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
 from .backup import DocItem
 from .recognize import PageSource, conversion_signature
-from .rmdata import decode_page, page_text
+from .rmdata import PageModel, decode_page, page_text
 
 log = logging.getLogger(__name__)
 
@@ -93,6 +95,12 @@ class IndexReport:
     skipped: int = 0  # documents unchanged since last time
     removed: int = 0  # documents purged because they left the library
     completed: bool = True  # False when the progress callback cancelled
+    failed: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+class PageDecodeError(ValueError):
+    pass
 
 
 class SearchIndex:
@@ -136,25 +144,30 @@ class SearchIndex:
                     # extractors, so none of them can be trusted to be current
                     force = True
                 conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('extractors', ?)", (recipe,))
-                if force:
-                    conn.execute("DELETE FROM docs")
-                    conn.execute("DELETE FROM pages_fts")
-                    known: dict[str, str] = {}
-                else:
-                    known = {uuid: (sig or "") for uuid, sig in conn.execute("SELECT uuid, signature FROM docs")}
+                known = {uuid: (sig or "") for uuid, sig in conn.execute("SELECT uuid, signature FROM docs")}
                 for gone in set(known) - set(current):
                     self._delete_doc(conn, gone)
                     report.removed += 1
 
             for doc in current.values():
-                signature = _doc_signature(doc)
-                if not force and signature and known.get(doc.uuid) == signature:
-                    report.skipped += 1
-                    continue
-                with conn:  # one document per transaction
-                    self._delete_doc(conn, doc.uuid)
-                    report.pages += self._insert_doc(conn, doc, signature)
-                report.indexed += 1
+                try:
+                    signature = _doc_signature(doc)
+                    if not force and signature and known.get(doc.uuid) == signature:
+                        report.skipped += 1
+                        continue
+                    with conn:  # failure rolls back to the document's last good text
+                        self._delete_doc(conn, doc.uuid)
+                        pages = self._insert_doc(conn, doc, signature)
+                    report.pages += pages
+                    report.indexed += 1
+                except (OSError, PageDecodeError) as exc:
+                    report.failed += 1
+                    report.errors.append(f"{doc.name}: {exc}")
+                    log.warning("could not index %s: %s", doc.name, exc)
+                    # The extractor recipe may have changed. Invalidate the
+                    # previous signature even if old text remains available.
+                    with conn:
+                        conn.execute("UPDATE docs SET signature = NULL WHERE uuid = ?", (doc.uuid,))
                 if progress is not None and progress(doc.name) is False:
                     report.completed = False
                     break
@@ -165,7 +178,7 @@ class SearchIndex:
     def _extractor_fingerprint(self) -> str:
         """Names the current extractors, in order, so a change of recipe is
         visible to the next refresh."""
-        return "|".join(_extractor_name(ex) for ex in self.extractors)
+        return "v2|" + "|".join(_extractor_name(ex) for ex in self.extractors)
 
     def _insert_doc(self, conn: sqlite3.Connection, doc: DocItem, signature: str) -> int:
         conn.execute(
@@ -175,7 +188,10 @@ class SearchIndex:
         )
         count = 0
         for page in doc.pages:
-            text = self.page_text_of(PageSource(doc, page, decode_page(page.rm_path))) if page.rm_path is not None else ""
+            model = decode_page(page.rm_path) if page.rm_path is not None else PageModel()
+            if model.error:
+                raise PageDecodeError(f"page {page.index + 1}: {model.error}")
+            text = self.page_text_of(PageSource(doc, page, model))
             # the doc name is searchable from every page
             body = (doc.name + "\n" + text).strip()
             if not body:
@@ -255,16 +271,21 @@ def _extractor_name(extractor: Extractor) -> str:
 
 
 def _doc_signature(doc: DocItem) -> str:
-    """What has to be unchanged for a document's indexed text to still be
-    current: its own ``lastModified`` plus the tablet's conversions, which
-    arrive without the metadata changing.
+    """Hash the scene content and mapping as well as metadata/conversions.
+    Repairs and external backup updates need not change lastModified.
 
     Empty when the document has no ``lastModified`` -- nothing to compare
     against, so such a document is always re-read.
     """
     if not doc.last_modified:
         return ""
-    return f"{doc.last_modified}|{conversion_signature(doc)}"
+    digest = hashlib.sha256(json.dumps(doc.content, sort_keys=True).encode())
+    digest.update(doc.name.encode())
+    for page in doc.pages:
+        digest.update(f"{page.page_id}:{page.index}:{page.base_index}".encode())
+        if page.rm_path is not None:
+            digest.update(page.rm_path.read_bytes())
+    return f"{doc.last_modified}|{conversion_signature(doc)}|{digest.hexdigest()}"
 
 
 def _fts_query(user_query: str) -> str:

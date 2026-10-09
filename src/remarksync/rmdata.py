@@ -150,6 +150,7 @@ class Stroke:
     widths: list[float] = field(default_factory=list)
     tool: str = ""
     alpha: float = 1.0  # opacity for translucent pens (the file's, or the default tint)
+    layer_id: str = ""
 
     def __post_init__(self) -> None:
         if not self.widths:
@@ -177,6 +178,8 @@ class TextBlock:
     height: float = 70.0
     paragraphs: list[tuple[str, str]] = field(default_factory=list)  # (style, text)
     lines: list[TextLine] = field(default_factory=list)
+    layer_visible: bool = True
+    layer_id: str = ""
 
 
 @dataclass
@@ -185,6 +188,10 @@ class Highlight:
 
     text: str
     rectangles: list[tuple[float, float, float, float]] = field(default_factory=list)
+    color: str = "#ffd400"
+    alpha: float = 95 / 255
+    layer_visible: bool = True
+    layer_id: str = ""
 
 
 @dataclass
@@ -218,7 +225,10 @@ def decode_page(source: Path | bytes) -> PageModel:
     if isinstance(source, (bytes, bytearray)):
         data = bytes(source)
     else:
-        data = Path(source).read_bytes()
+        try:
+            data = Path(source).read_bytes()
+        except OSError as exc:
+            return PageModel(error=f"{Path(source).name} could not be read ({exc})")
 
     if data[:33] == V5_HEADER:
         return _decode_v5(data)
@@ -233,13 +243,16 @@ def decode_page(source: Path | bytes) -> PageModel:
         where = source.name if isinstance(source, Path) else "<bytes>"
         log.warning("could not parse %s: %s", where, reason)
         return PageModel(error=f"{where} is not a readable v6 page ({reason})")
-    return _decode_v6(tree)
+    try:
+        return _decode_v6(tree)
+    except Exception as exc:
+        return PageModel(error=f"page scene could not be decoded ({type(exc).__name__}: {exc})")
 
 
 def page_text(page: PageModel) -> str:
     """All searchable text of a page: typed text plus PDF-highlight text."""
-    parts = [t.text for t in page.texts if t.text]
-    parts += [h.text for h in page.highlights if h.text]
+    parts = [t.text for t in page.texts if t.text and t.layer_visible]
+    parts += [h.text for h in page.highlights if h.text and h.layer_visible]
     return "\n".join(parts).strip()
 
 
@@ -326,14 +339,14 @@ def _decode_v6(tree) -> PageModel:
     # shifts by 810, not the 702 of the smaller sheet.
     x_shift = (paper_size[0] if paper_size else PAGE_WIDTH) / 2
 
-    def visit(item: si.SceneItem, ax: float, ay: float, visible: bool) -> None:
+    def visit(item: si.SceneItem, ax: float, ay: float, visible: bool, layer_id: str = "") -> None:
         if isinstance(item, si.Group):
             vis = visible and _visible(item)
             gx, gy = _group_anchor(item, anchor_pos)
             for child in item.children.values():
-                visit(child, ax + gx, ay + gy, vis)
+                visit(child, ax + gx, ay + gy, vis, str(item.node_id))
         elif isinstance(item, si.Line):
-            add_line(item, ax, ay, visible)
+            add_line(item, ax, ay, visible, layer_id)
         elif isinstance(item, si.GlyphRange):
             rects = [(r.x, r.y, r.w, r.h) for r in item.rectangles]
             if rects:
@@ -345,13 +358,17 @@ def _decode_v6(tree) -> PageModel:
             page.highlights.append(
                 Highlight(
                     text=item.text or "",
-                    rectangles=[(x + x_shift, y, w, h) for x, y, w, h in rects],
+                    rectangles=[(x + x_shift + ax, y + ay, w, h) for x, y, w, h in rects],
+                    color=_glyph_color(item),
+                    alpha=(item.color_rgba[3] / 255 if item.color_rgba and item.color_rgba[3] < 255 else 95 / 255),
+                    layer_visible=visible,
+                    layer_id=layer_id,
                 )
             )
         elif isinstance(item, si.Text):
-            page.texts.append(text_block(item, ax, ay))
+            page.texts.append(text_block(item, ax, ay, visible, layer_id))
 
-    def add_line(line: si.Line, ax: float, ay: float, visible: bool) -> None:
+    def add_line(line: si.Line, ax: float, ay: float, visible: bool, layer_id: str) -> None:
         tool = getattr(line.tool, "name", str(line.tool))
         if tool in ERASER_TOOLS:
             return
@@ -372,11 +389,13 @@ def _decode_v6(tree) -> PageModel:
                 widths=widths,
                 tool=tool,
                 alpha=alpha,
+                layer_id=layer_id,
             )
         )
 
-    def text_block(t: si.Text, ax: float, ay: float) -> TextBlock:
-        block = TextBlock(text="", pos_x=t.pos_x + x_shift + ax, pos_y=t.pos_y + ay, width=t.width)
+    def text_block(t: si.Text, ax: float, ay: float, visible: bool = True, layer_id: str = "") -> TextBlock:
+        block = TextBlock(text="", pos_x=t.pos_x + x_shift + ax, pos_y=t.pos_y + ay, width=t.width,
+                          layer_visible=visible, layer_id=layer_id)
         try:
             doc = TextDocument.from_scene_item(t)
             block.paragraphs = _paragraphs(doc)
@@ -393,6 +412,18 @@ def _decode_v6(tree) -> PageModel:
     if tree.root_text is not None:
         page.texts.append(text_block(tree.root_text, 0.0, 0.0))
     return page
+
+
+def _glyph_color(item: si.GlyphRange) -> str:
+    # Confirmed live yellow glyphs carry opaque black as an RGBA placeholder.
+    # Only this contradictory pair uses the palette; genuine custom RGBA and
+    # partially transparent black remain authoritative.
+    if item.color == si.PenColor.YELLOW and item.color_rgba == (0, 0, 0, 255):
+        return PEN_COLORS["YELLOW"]
+    if item.color_rgba:
+        r, g, b, _a = item.color_rgba
+        return f"#{r:02x}{g:02x}{b:02x}"
+    return PEN_COLORS.get(getattr(item.color, "name", ""), "#ffd400")
 
 
 def _line_color(line: si.Line, tool: str) -> tuple[str, float]:

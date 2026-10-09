@@ -53,7 +53,7 @@ also does not grow at all while content stays inside the paper — two pages
 ending at y = 1871.5, just inside the 1872 sheet, export paper height where we
 were adding a margin and growing.
 
-**And the margin was 24 px, not 47.** Fitted against the exported page box on
+**And the overflow margin is 47 px.** Fitted against the exported page box on
 the pages that overflow and carry no typed text: they need 47.8, 45.5 and
 46.6 px. See `GROWTH_MARGIN`.
 

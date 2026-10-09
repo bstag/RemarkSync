@@ -26,16 +26,20 @@ device.
 
 from __future__ import annotations
 
-import io
+import json
 import logging
+import shlex
 import shutil
 import subprocess
 import tarfile
+import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Protocol
 
 from .backup import safe_extract_names
+from .backupstore import publish, recover, validate_id, writer_lock
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +49,7 @@ FETCH_BATCH = 40  # documents per tar invocation (keeps the command line short)
 
 # progress(doc_uuid) -> keep going? Returning False stops the pull.
 Progress = Callable[[str], bool | None]
+Manifest = dict[str, int | None]  # relative file names/sizes, None for directories
 
 
 class Tablet(Protocol):
@@ -54,8 +59,8 @@ class Tablet(Protocol):
         """A signature per document uuid: its ``.metadata`` plus any text
         conversions, so either kind of change is noticed."""
 
-    def fetch(self, uuids: list[str], into: Path) -> None:
-        """Copy ``<uuid>.*`` and ``<uuid>/`` for each uuid into ``into``."""
+    def fetch(self, uuids: list[str], into: Path) -> Manifest:
+        """Copy documents and return the complete source entry manifest."""
 
 
 class SshTablet:
@@ -66,22 +71,24 @@ class SshTablet:
         self.remote_dir = remote_dir
         self.timeout = timeout
 
-    def _tar(self, patterns: list[str]) -> bytes:
-        remote = f"cd {self.remote_dir} && tar -cf - " + " ".join(patterns)
+    @contextmanager
+    def _tar(self, patterns: list[str]):
+        remote = f"cd {shlex.quote(self.remote_dir)} && tar -cf - " + " ".join(patterns)
         cmd = ["ssh", "-o", "StrictHostKeyChecking=accept-new", self.host, remote]
         log.info("ssh %s: %s", self.host, remote[:120])
-        proc = subprocess.run(cmd, capture_output=True, timeout=self.timeout)
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"ssh/tar failed with code {proc.returncode} — is the tablet connected and SSH enabled? "
-                f"{proc.stderr.decode(errors='replace').strip()[:200]}"
-            )
-        return proc.stdout
+        with tempfile.TemporaryFile() as data:
+            proc = subprocess.run(cmd, stdout=data, stderr=subprocess.PIPE, timeout=self.timeout)
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"ssh/tar failed with code {proc.returncode} — is the tablet connected and SSH enabled? "
+                    f"{proc.stderr.decode(errors='replace').strip()[:200]}"
+                )
+            data.seek(0)
+            yield data
 
     def read_signatures(self) -> dict[str, bytes]:
         files: dict[str, dict[str, bytes]] = {}
-        data = self._tar(["*.metadata", "$(ls -d *.textconversion 2>/dev/null)"])
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as tar:
+        with self._tar(["*.metadata", "$(ls -d *.textconversion 2>/dev/null)"]) as data, tarfile.open(fileobj=data, mode="r:") as tar:
             for member in tar.getmembers():
                 if not member.isfile():
                     continue
@@ -92,15 +99,18 @@ class SshTablet:
                     files.setdefault(uuid, {})[name] = handle.read()
         return {uuid: _signature(parts) for uuid, parts in files.items() if f"{uuid}.metadata" in parts}
 
-    def fetch(self, uuids: list[str], into: Path) -> None:
+    def fetch(self, uuids: list[str], into: Path) -> Manifest:
+        for uuid in uuids:
+            validate_id(uuid)
+        manifest: Manifest = {}
         for start in range(0, len(uuids), FETCH_BATCH):
             batch = uuids[start : start + FETCH_BATCH]
             patterns = [f"{u}.*" for u in batch] + [u for u in batch]
             # a document without a page directory makes tar report an error
             # but still emit the rest; tolerate that by listing existing names
-            data = self._tar([f"$(ls -d {p} 2>/dev/null)" for p in patterns])
-            with tarfile.open(fileobj=io.BytesIO(data), mode="r:") as tar:
-                _safe_extract(tar, into)
+            with self._tar([f"$(ls -d {p} 2>/dev/null)" for p in patterns]) as data, tarfile.open(fileobj=data, mode="r:") as tar:
+                manifest.update(_safe_extract(tar, into))
+        return manifest
 
 
 class LocalTablet:
@@ -113,13 +123,18 @@ class LocalTablet:
     def read_signatures(self) -> dict[str, bytes]:
         return {p.name[: -len(".metadata")]: local_signature(self.root, p.name[: -len(".metadata")]) for p in self.root.glob("*.metadata")}
 
-    def fetch(self, uuids: list[str], into: Path) -> None:
+    def fetch(self, uuids: list[str], into: Path) -> Manifest:
+        manifest: Manifest = {}
         for u in uuids:
             for src in _document_entries(self.root, u):
+                if src.is_symlink() or (src.is_dir() and any(p.is_symlink() for p in src.rglob("*"))):
+                    raise ValueError(f"refusing document link: {src}")
+                manifest.update(_entry_manifest(self.root, src))
                 if src.is_dir():
                     shutil.copytree(src, into / src.name, dirs_exist_ok=True)
                 else:
                     shutil.copy2(src, into / src.name)
+        return manifest
 
 
 @dataclass
@@ -158,6 +173,7 @@ def plan(remote: dict[str, bytes], dest: Path) -> PullReport:
     """Which documents to fetch, given the tablet's signatures and the local copies."""
     report = PullReport()
     for uuid, data in remote.items():
+        validate_id(uuid)
         local = local_signature(dest, uuid)
         if local is None:
             report.new.append(uuid)
@@ -186,9 +202,19 @@ def pull(
     """Bring ``dest`` up to date with the tablet. Returns what was done
     (or, with ``dry_run``, what would be: only the metadata is read)."""
     dest = Path(dest)
-    dest.mkdir(parents=True, exist_ok=True)
     tablet = tablet or SshTablet(host, timeout=timeout)
+    if dry_run:
+        if any((dest / ".remarksync-transactions").glob("*.json")):
+            raise RuntimeError("an interrupted pull needs recovery; run a normal pull before a dry run")
+        return _pull_locked(dest, tablet, progress, force, prune, True)
+    dest.mkdir(parents=True, exist_ok=True)
 
+    with writer_lock(dest):
+        recover(dest)
+        return _pull_locked(dest, tablet, progress, force, prune, dry_run)
+
+
+def _pull_locked(dest: Path, tablet: Tablet, progress: Progress | None, force: bool, prune: bool, dry_run: bool) -> PullReport:
     remote = tablet.read_signatures()
     report = plan(remote, dest)
     todo = list(remote) if force else report.new + report.changed
@@ -203,23 +229,35 @@ def pull(
         # fetch into a staging directory first: a failed transfer must never
         # cost local data. Only then is the old copy replaced, wholesale, so
         # pages removed on the tablet vanish here too.
-        shutil.rmtree(staging, ignore_errors=True)
-        staging.mkdir()
+        staging.mkdir(exist_ok=True)
+        batch_dir = Path(tempfile.mkdtemp(prefix="batch-", dir=staging))
         try:
-            tablet.fetch(batch, staging)
+            manifest = tablet.fetch(batch, batch_dir)
+            # Validate the entire batch before publishing even one document.
             for uuid in batch:
-                _remove_document(dest, uuid)
-                _move_document(staging, dest, uuid)
+                _validate_document(batch_dir, uuid, remote[uuid])
+            if manifest is None or manifest != _folder_manifest(batch_dir):
+                raise ValueError("incomplete fetch: source manifest does not match staged files")
+            latest = tablet.read_signatures()
+            if any(latest.get(uuid) != remote[uuid] for uuid in batch):
+                raise ValueError("tablet changed during fetch; retry the pull")
+            for uuid in batch:
+                publish(dest, batch_dir, uuid, _document_entries, _move_document)
         finally:
-            shutil.rmtree(staging, ignore_errors=True)
+            shutil.rmtree(batch_dir)
+            if not any(staging.iterdir()):
+                staging.rmdir()
         for uuid in batch:
             if progress is not None and progress(uuid) is False:
                 report.completed = False
                 return report
 
     if prune:
+        latest = tablet.read_signatures()
+        if any(uuid in latest for uuid in report.removed):
+            raise ValueError("tablet changed before pruning; retry the pull")
         for uuid in report.removed:
-            _remove_document(dest, uuid)
+            publish(dest, dest, uuid, _document_entries, _move_document, prune=True)
     return report
 
 
@@ -229,18 +267,11 @@ STAGING_DIR = ".remarksync-pull-tmp"
 def _document_entries(root: Path, uuid: str) -> list[Path]:
     """Everything belonging to a document: ``<uuid>.*`` (files, and the
     ``.highlights`` and similar directories) plus the ``<uuid>/`` page dir."""
-    entries = list(root.glob(f"{uuid}.*"))
+    validate_id(uuid)
+    entries = sorted(root.glob(f"{uuid}.*"))
     if (root / uuid).is_dir():
         entries.append(root / uuid)
     return entries
-
-
-def _remove_document(dest: Path, uuid: str) -> None:
-    for p in _document_entries(dest, uuid):
-        if p.is_dir():
-            shutil.rmtree(p, ignore_errors=True)
-        else:
-            p.unlink()
 
 
 def _move_document(src: Path, dest: Path, uuid: str) -> None:
@@ -248,7 +279,60 @@ def _move_document(src: Path, dest: Path, uuid: str) -> None:
         shutil.move(str(p), str(dest / p.name))
 
 
-def _safe_extract(tar: tarfile.TarFile, into: Path) -> None:
+def _safe_extract(tar: tarfile.TarFile, into: Path) -> Manifest:
     """Extract, refusing paths that would escape ``into``."""
-    safe_extract_names([m.name for m in tar.getmembers()], into)
-    tar.extractall(into)
+    members = tar.getmembers()
+    safe_extract_names([m.name for m in members], into)
+    if any(not (m.isfile() or m.isdir()) for m in members):
+        raise ValueError("refusing archive link or special member type")
+    if len(members) > 200_000 or sum(m.size for m in members) > 8 * 1024**3:
+        raise ValueError("archive exceeds extraction limits")
+    # Write only regular files/directories: no tar link or permission metadata
+    # is applied, independently of interpreter-specific extraction defaults.
+    for member in members:
+        target = into / member.name
+        if member.isdir():
+            target.mkdir(parents=True, exist_ok=True)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with tar.extractfile(member) as source, target.open("wb") as output:
+                shutil.copyfileobj(source, output)
+    # Include parent directories tar may omit from its explicit member list.
+    expected: Manifest = {}
+    for member in members:
+        path = Path(member.name)
+        expected[path.as_posix().rstrip("/")] = None if member.isdir() else member.size
+        for parent in path.parents:
+            if parent != Path("."):
+                expected[parent.as_posix()] = None
+    return expected
+
+
+def _entry_manifest(root: Path, entry: Path) -> Manifest:
+    paths = [entry, *entry.rglob("*")] if entry.is_dir() else [entry]
+    return {p.relative_to(root).as_posix(): None if p.is_dir() else p.stat().st_size for p in paths}
+
+
+def _folder_manifest(root: Path) -> Manifest:
+    return {p.relative_to(root).as_posix(): None if p.is_dir() else p.stat().st_size for p in root.rglob("*")}
+
+
+def _validate_document(staging: Path, uuid: str, signature: bytes) -> None:
+    meta_path = staging / f"{uuid}.metadata"
+    if not meta_path.is_file():
+        raise ValueError(f"incomplete fetch: missing {uuid}.metadata")
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        if not isinstance(meta, dict):
+            raise ValueError("metadata is not an object")
+        if meta.get("type") != "CollectionType":
+            content = json.loads((staging / f"{uuid}.content").read_text(encoding="utf-8"))
+            if not isinstance(content, dict):
+                raise ValueError("content is not an object")
+            kind = content.get("fileType")
+            if kind in ("pdf", "epub") and not meta.get("deleted") and not (staging / f"{uuid}.{kind}").is_file():
+                raise ValueError(f"missing base {kind}")
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"incomplete document {uuid}: {exc}") from exc
+    if local_signature(staging, uuid) != signature:
+        raise ValueError(f"document {uuid} changed during fetch; retry the pull")

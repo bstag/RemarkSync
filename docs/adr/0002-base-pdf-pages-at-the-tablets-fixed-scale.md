@@ -35,3 +35,13 @@ Two other things that export shows, both worth knowing:
   width present being 0.159 pt (about half a tablet pixel). The device draws
   ink as filled outlines, which is what `viewer._stroke_outline` does. That
   choice was made on reasoning and is now confirmed.
+
+## Amended 2026-10-03: width, source pages and preservation boundaries
+
+Centering now uses each page's declared paper width, including 1620 px on
+Paper Pro, while retaining the measured scale. Source-PDF page mapping is
+independent of tablet page order; inserted pages have no inherited underlay.
+The original measurements do not establish fidelity for every pan/zoom or
+device transform, which remains an explicit export warning. Preservation PDFs
+keep original page boxes and append context sheets for off-page notes; the
+viewer continues to follow the tablet canvas policy.

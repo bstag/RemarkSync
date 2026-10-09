@@ -33,7 +33,7 @@ class InkLine:
 
 def cut_lines(model: PageModel, bin_px: float = 4.0, smooth_px: float = 24.0) -> list[InkLine]:
     """Group a page's pen strokes into written lines, top to bottom."""
-    strokes = [s for s in model.strokes if not s.highlighter and len(s.points) >= 2]
+    strokes = [s for s in model.strokes if s.layer_visible and not s.highlighter and len(s.points) >= 2]
     if not strokes:
         return []
     centres = []

@@ -1,7 +1,7 @@
 # RemarkSync
 
 A local-first library, viewer, search index and format compiler for reMarkable
-tablets, working entirely from a raw backup of the tablet's own files.
+tablets, working from preserved copies of the tablet's own document data.
 
 ## Language
 
@@ -9,7 +9,7 @@ tablets, working entirely from a raw backup of the tablet's own files.
 
 **Backup folder**:
 A directory holding a raw copy of the tablet's document store (the xochitl
-directory), one set of files per document. The only thing RemarkSync reads.
+directory), one set of files per document, usable as a local library.
 _Avoid_: mirror, root, dump
 
 **Library**:
@@ -29,9 +29,50 @@ tablet stores a PDF rendering of every EPUB, so both kinds have one.
 _Avoid_: source file, attachment
 
 **Archive**:
-A single document exported from the tablet as one `.rmdoc` file. Opened on its
-own, outside any library.
+A single editable tablet document packaged as one `.rmdoc`, acquired from
+the tablet/cloud or compiled locally; it can be opened outside a library.
 _Avoid_: export, bundle, zip
+
+### Sync and preservation
+
+**Cloud source**:
+The account's document data in reMarkable Cloud, populated when the tablet syncs.
+_Avoid_: central server (that is our separately hosted service)
+
+**Central server**:
+The always-on RemarkSync host that acquires cloud documents and preserves their
+raw revisions and annotated PDFs for access by desktop clients.
+_Avoid_: reMarkable Cloud, tablet
+
+**Cloud revision**:
+One cloud-indexed version of a document, identified by its document identity
+and content hash; it is separate from its display name and modification time.
+_Avoid_: filename version, latest copy
+
+**Preservation PDF**:
+A separate copy of a base PDF with visible highlights, ink and typed notes,
+plus the original and raw evidence needed to assess what was preserved.
+_Avoid_: original PDF, editable tablet archive
+
+**Rendering**:
+One preservation PDF derived from a raw revision; correcting the renderer can
+produce another rendering while retaining the same raw revision.
+_Avoid_: cloud revision
+
+**Desktop download**:
+A verified local copy of the central server's published archives and PDFs,
+usable offline and refreshed independently of the tablet.
+_Avoid_: two-way sync, upload
+
+**Whole-library backup**:
+A portable copy of retained document revisions, preservation PDFs and the
+information needed to verify them and reconstruct the current library.
+Account credentials and rebuildable caches are separate from document backup.
+
+**Restore**:
+Reconstructing a readable library from verified preserved data into a new
+location, retaining the original backup as independent evidence.
+_Avoid_: sync, cloud upload
 
 ### A page
 
@@ -59,12 +100,12 @@ divider lines marking paper edges that content overflows.
 _Avoid_: layout, geometry, viewport
 
 **Canvas**:
-The area a page is drawn into. Exactly the paper unless content overflows,
-in which case it grows to hold everything.
+The area a page is drawn into. It starts with the paper and grows downward
+and sideways for overflow; the viewer clips content above the paper.
 
 **Underlay**:
-The base document's page drawn behind the ink, fitted inside the paper at its
-own aspect ratio and centred, the way the tablet shows it.
+The base document's page drawn behind the ink at the tablet's measured physical
+scale, centered on the declared paper width with its top at the paper top.
 _Avoid_: background image, PDF layer
 
 **Template**:

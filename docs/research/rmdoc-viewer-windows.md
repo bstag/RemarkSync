@@ -1,5 +1,11 @@
 # Windows options for viewing reMarkable notes (.rm / .rmdoc)
 
+Dated research and renderer/compiler measurements, retained as historical
+evidence. Current implemented behavior and deployment are in
+[current status](../current-status.md). The live scene-debug experiment described
+later proved unsafe for stored page data; its enablement instructions are now
+retired, while existing-capture comparison remains available.
+
 Researched 2026-09-02. Primary sources cited inline. Items marked **(unverified)** were not confirmed against source and should be checked before relying on them.
 
 ## TL;DR

@@ -1,0 +1,90 @@
+name: remarksync
+x-runtime: &runtime
+  image: remarksync-server:local
+  build:
+    context: ../..
+    dockerfile: deploy/server/Dockerfile
+  user: "10001:10001"
+  init: true
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  labels:
+    com.centurylinklabs.watchtower.enable: "false"
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  initialize:
+    image: remarksync-server:local
+    profiles: [setup]
+    user: "0:0"
+    restart: "no"
+    entrypoint: [python, /app/deploy/server/initialize.py]
+    volumes:
+      - type: volume
+        source: library
+        target: /data/library
+        volume: {nocopy: true}
+      - type: volume
+        source: cloud-profile
+        target: /state/cloud
+        volume: {nocopy: true}
+      - type: volume
+        source: cloud-key
+        target: /keys
+        volume: {nocopy: true}
+
+  sync:
+    <<: *runtime
+    command: [cloud, watch, --dest, /data/library, --interval, "300"]
+    environment:
+      REMARKSYNC_CLOUD_CLIENT: /app/.tools/rmapi/rmapi
+      REMARKSYNC_CLOUD_PROFILE: /state/cloud
+      REMARKSYNC_CLOUD_KEY_FILE: /keys/cloud.key
+      REMARKSYNC_CLOUD_SESSION_DIR: /run/remarksync
+    volumes:
+      - type: volume
+        source: library
+        target: /data/library
+        volume: {nocopy: true}
+      - type: volume
+        source: cloud-profile
+        target: /state/cloud
+        volume: {nocopy: true}
+      - type: volume
+        source: cloud-key
+        target: /keys
+        read_only: true
+        volume: {nocopy: true}
+    tmpfs:
+      - /tmp:mode=1777
+      - /run/remarksync:mode=0700,uid=10001,gid=10001
+    mem_limit: 4g
+    cpus: 2
+    stop_grace_period: 30s
+
+  web:
+    <<: *runtime
+    command: [serve, /data/library, --host, 0.0.0.0, --port, "8080"]
+    volumes:
+      - type: volume
+        source: library
+        target: /data/library
+        read_only: true
+        volume: {nocopy: true}
+    ports:
+      - "127.0.0.1:8787:8080"
+    tmpfs:
+      - /tmp:mode=1777
+    mem_limit: 256m
+    cpus: 1
+
+volumes:
+  library:
+  cloud-profile:
+  cloud-key:

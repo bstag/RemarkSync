@@ -12,7 +12,7 @@ to read the strokes from the backup. Options weighed, all at no cost:
 
 * **MyScript cloud**, the same engine the tablet uses: 2,000 requests a
   month free, then paid; sends the ink off the machine, which the data
-  policy (nothing leaves the backup folder) rules out as a default.
+  local handwriting-processing policy rules out as a default.
 * **Windows ink recogniser** (WinRT `InkRecognizerContainer`): offline,
   roughly two words in three on cursive, but it fails outright on a
   3,000-stroke page, stalls on some shapes, and a stall wedges the engine
@@ -71,3 +71,11 @@ machine-learning dependencies.
 * MyScript cloud remains possible behind the same seam if someone wants
   it, for the free monthly quota, but would need its own opt-in because
   it sends ink off the machine.
+
+## Scope clarified 2026-10-03
+
+The decision keeps handwriting recognition local; it does not prohibit the
+user's separately selected reMarkable Cloud and private server acquisition
+workflow. Hosted sync/export does not run OCR, and no external handwriting API
+is called. The quoted service limits, prices and September measurements above
+are historical decision context, not current service offers or a new benchmark.

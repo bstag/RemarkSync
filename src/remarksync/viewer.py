@@ -8,13 +8,12 @@ and line comes from the frame.
 
 from __future__ import annotations
 
-import math
-
 import fitz  # pymupdf
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QWidget
 
+from .inkgeometry import stroke_polygons
 from .layout import PageFrame, placeholder_frame
 from .backup import TEMPLATE_BLANK, TEMPLATE_DOTS, TEMPLATE_GRID, TEMPLATE_ISOMETRIC, TEMPLATE_RULED, DocItem, PageRef
 from .rmdata import PageModel, Stroke
@@ -69,36 +68,43 @@ def draw_template(painter: QPainter, template: str, rect: QRectF) -> None:
 class PdfUnderlay:
     """Renders base-document pages to QImages at the size the frame asks for."""
 
-    def __init__(self, pdf_path):
+    def __init__(self, pdf_path, cache_bytes: int = 64 * 1024 * 1024):
         self.doc = fitz.open(pdf_path)
-        self._cache: dict[int, QImage] = {}
+        self._cache: dict[tuple, QImage] = {}
+        self._cache_bytes = cache_bytes
 
     @property
     def page_count(self) -> int:
         return self.doc.page_count
 
-    def page_size(self, index: int) -> tuple[float, float] | None:
+    def page_size(self, index: int | None) -> tuple[float, float] | None:
         """Base page size in PDF points (aspect ratio is what the layout uses)."""
-        if index >= self.doc.page_count:
+        if index is None or not 0 <= index < self.doc.page_count:
             return None
         rect = self.doc.load_page(index).rect
         return float(rect.width), float(rect.height)
 
-    def page_image(self, index: int, size: tuple[float, float]) -> QImage | None:
+    def page_image(self, index: int | None, size: tuple[float, float]) -> QImage | None:
         """The base page rendered to fill ``size`` (tablet pixels)."""
-        if index in self._cache:
-            return self._cache[index]
-        if index >= self.doc.page_count:
+        key = (index, size)
+        if key in self._cache:
+            img = self._cache.pop(key)
+            self._cache[key] = img
+            return img
+        if index is None or not 0 <= index < self.doc.page_count:
             return None
         page = self.doc.load_page(index)
         zoom = max(size[0] / page.rect.width, size[1] / page.rect.height)
         pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
         img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
         img = img.copy()  # detach from pymupdf buffer
-        self._cache[index] = img
+        self._cache[key] = img
+        while self._cache and sum(image.sizeInBytes() for image in self._cache.values()) > self._cache_bytes:
+            del self._cache[next(iter(self._cache))]
         return img
 
     def close(self) -> None:
+        self._cache.clear()
         self.doc.close()
 
 
@@ -138,86 +144,13 @@ def _stroke_paths(stroke: Stroke) -> list[tuple[float, QPainterPath]]:
     return sorted(paths.items())
 
 
-def _decimated(stroke: Stroke) -> tuple[list[tuple[float, float]], list[float]]:
-    """Points and widths with the stroke's sampling thinned to about a
-    quarter of the pen width: the tablet samples every couple of pixels,
-    which is far denser than a 30 px highlighter needs, and the outline
-    cost is per point. Ends are always kept."""
-    pts, ws = stroke.points, stroke.widths
-    if len(pts) < 3:
-        return pts, ws
-    spacing = max(1.5, stroke.width / 4)
-    keep_pts = [pts[0]]
-    keep_ws = [ws[0]]
-    lx, ly = pts[0]
-    for i in range(1, len(pts) - 1):
-        x, y = pts[i]
-        if abs(x - lx) + abs(y - ly) >= spacing:
-            keep_pts.append((x, y))
-            keep_ws.append(ws[i])
-            lx, ly = x, y
-    keep_pts.append(pts[-1])
-    keep_ws.append(ws[-1])
-    return keep_pts, keep_ws
-
-
 def _stroke_outline(stroke: Stroke) -> QPainterPath:
-    """The area a variable-width stroke covers, as one winding-fill path,
-    the way the tablet's own PDF export draws ink: a quad per segment whose
-    width tapers from one point's width to the next, a wedge at every joint
-    so turns leave no notch, and a round cap at each end. Filled once, so a
-    translucent tint stays uniform however the pieces overlap, and abrupt
-    width changes do not bulge the way per-point discs would."""
+    """Shared variable-width ink geometry, filled as one compound path."""
     path = QPainterPath()
     path.setFillRule(Qt.WindingFill)
-    pts, ws = _decimated(stroke)
-    radii = [max(0.2, w / 2) for w in ws]
-    normals: list[tuple[float, float] | None] = []
-
-    def add(polygon: list[tuple[float, float]]) -> None:
-        # every piece must wind the same way, or overlapping pieces of
-        # opposite orientation cancel to holes under the winding rule
-        area = 0.0
-        for (ax_, ay_), (bx_, by_) in zip(polygon, polygon[1:] + polygon[:1]):
-            area += ax_ * by_ - bx_ * ay_
-        if area < 0:
-            polygon = polygon[::-1]
-        path.addPolygon(QPolygonF([QPointF(x_, y_) for x_, y_ in polygon]))
+    for polygon in stroke_polygons(stroke):
+        path.addPolygon(QPolygonF([QPointF(x, y) for x, y in polygon]))
         path.closeSubpath()
-
-    for i in range(1, len(pts)):
-        (x0, y0), (x1, y1) = pts[i - 1], pts[i]
-        dx, dy = x1 - x0, y1 - y0
-        length = math.hypot(dx, dy)
-        if length < 1e-6:
-            normals.append(None)
-            continue
-        nx, ny = -dy / length, dx / length
-        normals.append((nx, ny))
-        r0, r1 = radii[i - 1], radii[i]
-        add([
-            (x0 + nx * r0, y0 + ny * r0),
-            (x1 + nx * r1, y1 + ny * r1),
-            (x1 - nx * r1, y1 - ny * r1),
-            (x0 - nx * r0, y0 - ny * r0),
-        ])
-    # joints: a wedge between the two segments' offset corners on each side
-    for i in range(1, len(pts) - 1):
-        a, b = normals[i - 1], normals[i]
-        if a is None or b is None or a[0] * b[0] + a[1] * b[1] > 0.985:
-            continue  # under ~10 degrees the notch is invisible
-        x, y = pts[i]
-        r = radii[i]
-        for sign in (1.0, -1.0):
-            add([
-                (x, y),
-                (x + sign * a[0] * r, y + sign * a[1] * r),
-                (x + sign * b[0] * r, y + sign * b[1] * r),
-            ])
-    for idx in (0, len(pts) - 1):
-        # round caps as polygons too, so their winding matches the rest
-        (x, y), r = pts[idx], radii[idx]
-        add([(x + r * math.cos(t * math.pi / 8), y + r * math.sin(t * math.pi / 8)) for t in range(16)])
     return path
 
 
@@ -265,11 +198,11 @@ class PageCanvas(QWidget):
         self._page = page
         self._underlay = underlay
         self._decoded = frame is not None
-        base_size = underlay.page_size(page.index) if underlay is not None else None
+        base_size = underlay.page_size(page.base_index) if underlay is not None else None
         self._frame = frame if frame is not None else placeholder_frame(page, base_size)
         self._scale = scale
         self.set_scale(scale)
-        self.setToolTip(f"{doc.name} — page {page.index + 1}")
+        self._update_tooltip()
 
     def frame(self) -> PageFrame:
         return self._frame
@@ -287,8 +220,15 @@ class PageCanvas(QWidget):
         """Swap in the decoded page (sizes the widget, drops the cached paint)."""
         self._frame = frame
         self._decoded = True
+        self._update_tooltip()
         _painted_pages.drop(id(self))
         self.set_scale(self._scale)
+
+    def _update_tooltip(self) -> None:
+        label = f"{self._doc.name} — page {self._page.index + 1}"
+        if self._frame.page.error:
+            label += f"\n{self._frame.page.error}"
+        self.setToolTip(label)
 
     def model(self) -> PageModel:
         return self._frame.page
@@ -326,7 +266,7 @@ class PageCanvas(QWidget):
 
         if frame.underlay is not None and self._underlay is not None:
             rect = QRectF(*frame.underlay)
-            img = self._underlay.page_image(self._page.index, (rect.width(), rect.height()))
+            img = self._underlay.page_image(self._page.base_index, (rect.width(), rect.height()))
             if img is not None:
                 painter.drawImage(rect, img)
         if frame.template is not None:
@@ -335,6 +275,13 @@ class PageCanvas(QWidget):
         self._paint_highlights(painter, model)
         self._paint_strokes(painter, model)
         self._paint_texts(painter, model)
+        if model.error:
+            painter.setPen(QColor("#a02020"))
+            font = QFont(FONT_SANS)
+            font.setPixelSize(26)
+            painter.setFont(font)
+            painter.drawText(QRectF(24, 24, max(1, frame.width - 48), 200),
+                             Qt.TextWordWrap, f"Unreadable page\n{model.error}")
 
         painter.setPen(QPen(QColor(0, 0, 0, 30), 2))
         painter.drawRect(QRectF(0, 0, frame.width, frame.height))
@@ -348,12 +295,14 @@ class PageCanvas(QWidget):
         if not model.highlights:
             return
         painter.save()
-        color = QColor("#ffd400")
-        color.setAlpha(95)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(color)
         painter.setCompositionMode(QPainter.CompositionMode_Multiply)
         for hl in model.highlights:
+            if not hl.layer_visible:
+                continue
+            color = QColor(hl.color)
+            color.setAlphaF(hl.alpha)
+            painter.setBrush(color)
             for x, y, w, h in hl.rectangles:
                 if w > 0 and h > 0:
                     painter.drawRect(QRectF(x, y, w, h))
@@ -398,7 +347,7 @@ class PageCanvas(QWidget):
             return
         painter.save()
         for block in model.texts:
-            if not block.text.strip():
+            if not block.layer_visible or not block.text.strip():
                 continue
             lines = block.lines or lay_out_lines(block.paragraphs)
             counters: dict[str, int] = {}  # running numbers for numbered lists

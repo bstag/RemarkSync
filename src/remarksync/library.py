@@ -79,6 +79,7 @@ class Library:
         """
         self.tree = scan_backup(self.root)
         self._docs = {d.uuid: d for d in iter_docs(self.tree)}
+        self._paper = "unread"
 
     @property
     def documents(self) -> list[DocItem]:
@@ -113,6 +114,8 @@ class Library:
         boolean in hand can pass it, instead of choosing between two methods
         and turning the boolean back into a branch.
         """
+        if any((self.root / ".remarksync-transactions").glob("*.json")):
+            raise RuntimeError("backup has an unfinished pull; recover it before indexing")
         return self._index.refresh(self.documents, progress, force=force)
 
     def search(self, query: str, limit: int = 200) -> list[SearchHit]:

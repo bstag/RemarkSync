@@ -30,7 +30,7 @@ from rmscene import CrdtId, LwwValue, PageInfoBlock, RootTextBlock, SceneInfo, s
 from rmscene import scene_items as si
 
 from . import rmformat
-from .rmdata import PAGE_HEIGHT, PAGE_WIDTH, PAPER_SIZES
+from .rmdata import PAGE_HEIGHT, PAGE_WIDTH
 from .textmetrics import STYLE_CODES
 
 rmformat.install()  # write the paragraph-format fields the tablet expects for subheadings

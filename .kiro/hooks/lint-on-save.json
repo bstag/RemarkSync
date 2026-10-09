@@ -4,11 +4,11 @@
     {
       "name": "Ruff on save",
       "trigger": "PostFileSave",
-      "description": "Runs Pyflakes rules over src and tests whenever a Python file is saved, so dead imports and unused locals surface immediately instead of accumulating.",
+      "description": "Runs the repository's Pyflakes rules over application, tests, supported scripts and server tools whenever a Python file is saved.",
       "matcher": "\\.py$",
       "action": {
         "type": "command",
-        "command": ".venv\\Scripts\\python -m ruff check --output-format concise src tests",
+        "command": ".venv\\Scripts\\python -m ruff check --output-format concise src tests scripts deploy/server",
         "timeout": 60
       }
     }

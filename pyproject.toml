@@ -5,9 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "remarksync"
 version = "0.1.0"
-description = "Local-first library, viewer, search and format compiler for reMarkable documents"
+description = "reMarkable backup viewer, local search, Markdown compiler, cloud sync and original-PDF preservation"
 readme = "README.md"
 requires-python = ">=3.11"
+# PEP 639 (license = "MIT" with license-files) needs setuptools>=77 and
+# packaging>=24.2 at build time; the table form keeps the existing floor and
+# setuptools includes LICENSE by default either way.
 license = { text = "MIT" }
 dependencies = [
     "PySide6>=6.6",
@@ -17,6 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.16"]
+server = ["cryptography>=46"]
 # local handwriting recognition (TrOCR); install PyTorch with CUDA first from
 # https://download.pytorch.org/whl/cu124 for GPU speed
 handwriting = ["torch", "torchvision", "transformers<5", "pillow", "sentencepiece", "tiktoken", "protobuf"]

@@ -24,7 +24,8 @@ from __future__ import annotations
 
 import json
 import logging
-import shutil
+import ntpath
+import stat
 import tempfile
 import zipfile
 from dataclasses import dataclass, field
@@ -45,6 +46,9 @@ class PageRef:
     index: int
     rm_path: Path | None
     template: str = TEMPLATE_BLANK
+    page_id: str = ""
+    base_index: int | None = None  # original PDF page; None for an inserted note page
+    metadata: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -60,6 +64,7 @@ class DocItem:
     base_pdf: Path | None = None  # PDF to draw under the ink: the .pdf itself, or the tablet's cached render of an .epub
     doc_dir: Path | None = None
     last_modified: str = ""
+    content: dict = field(default_factory=dict)  # retain mapping/zoom fields for future export
 
     def resolve_base_pdf(self) -> Path | None:
         if self.base_pdf and self.base_pdf.exists():
@@ -107,16 +112,12 @@ def _first_existing(paths: list[Path]) -> Path | None:
     return None
 
 
-def _find_page_rm(pages_dir: Path, page_id: str, index: int) -> Path | None:
+def _find_page_rm(pages_dir: Path, page_id: str, index: int, *, positional: bool = True) -> Path | None:
     """Locate the .rm file for a page under either naming scheme."""
-    return _first_existing(
-        [
-            pages_dir / page_id / f"{page_id}.rm",
-            pages_dir / str(index) / f"{index}.rm",
-            pages_dir / f"{page_id}.rm",
-            pages_dir / f"{index}.rm",
-        ]
-    )
+    paths = [pages_dir / page_id / f"{page_id}.rm", pages_dir / f"{page_id}.rm"]
+    if positional:
+        paths += [pages_dir / str(index) / f"{index}.rm", pages_dir / f"{index}.rm"]
+    return _first_existing(paths)
 
 
 def _parse_doc(uuid: str, base: Path, meta: dict) -> DocItem:
@@ -134,6 +135,7 @@ def _parse_doc(uuid: str, base: Path, meta: dict) -> DocItem:
         file_type=file_type,
         doc_dir=base / uuid if (base / uuid).is_dir() else base,
         last_modified=str(meta.get("lastModified") or ""),
+        content=content,
     )
 
     if file_type in ("pdf", "epub"):
@@ -149,14 +151,27 @@ def _parse_doc(uuid: str, base: Path, meta: dict) -> DocItem:
         raw_pages = content.get("pages")
     page_ids: list[str] = []
     templates_inline: list[str] = []
+    page_metadata: list[dict] = []
+    source_indices: list[int | None] = []
+    declared_pages = bool(raw_pages)
+    modern_pages = bool(isinstance(raw_pages, list) and raw_pages and isinstance(raw_pages[0], dict))
     if isinstance(raw_pages, list) and raw_pages and isinstance(raw_pages[0], dict):
-        page_ids = [str(p.get("id")) for p in raw_pages]
+        active = [p for p in raw_pages if not (p.get("deleted") or {}).get("value", False)]
+        # idx.value is the tablet's lexicographic order key. With incomplete
+        # keys keep the stored order; inventing one would mispair ink/pages.
+        if active and all(isinstance((p.get("idx") or {}).get("value"), str) for p in active):
+            active.sort(key=lambda p: p["idx"]["value"])
+        page_metadata = active
+        page_ids = [str(p.get("id")) for p in active]
+        source_indices = [_pdf_index((p.get("redir") or {}).get("value")) for p in active]
         templates_inline = [
-            str((p.get("template") or {}).get("value") or "") for p in raw_pages
+            str((p.get("template") or {}).get("value") or "") for p in active
         ]
     elif isinstance(raw_pages, list):
         page_ids = [str(p) for p in raw_pages]
-    if not page_ids:
+        mapping = content.get("redirectionPageMap") or []
+        source_indices = [_pdf_index(mapping[i] if i < len(mapping) else i) for i in range(len(page_ids))]
+    if not page_ids and not declared_pages:
         if doc.base_pdf:
             # unannotated documents keep an empty pages list; show the base PDF itself
             try:
@@ -164,6 +179,7 @@ def _parse_doc(uuid: str, base: Path, meta: dict) -> DocItem:
 
                 with fitz.open(doc.base_pdf) as pdf:
                     page_ids = [str(i) for i in range(pdf.page_count)]
+                    source_indices = list(range(pdf.page_count))
             except Exception as exc:
                 log.warning("could not open base pdf %s: %s", doc.base_pdf, exc)
         else:
@@ -184,11 +200,18 @@ def _parse_doc(uuid: str, base: Path, meta: dict) -> DocItem:
         doc.pages.append(
             PageRef(
                 index=i,
-                rm_path=_find_page_rm(doc.doc_dir, pid, i),
+                rm_path=_find_page_rm(doc.doc_dir, pid, i, positional=not modern_pages),
                 template=_normalise_template(templates[i]) if i < len(templates) else TEMPLATE_BLANK,
+                page_id=pid,
+                base_index=source_indices[i] if doc.base_pdf and i < len(source_indices) else None,
+                metadata=page_metadata[i] if i < len(page_metadata) else {},
             )
         )
     return doc
+
+
+def _pdf_index(value) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
 def scan_backup(root: Path) -> list:
@@ -198,6 +221,8 @@ def scan_backup(root: Path) -> list:
     page counts stay truthful.
     """
     root = Path(root)
+    if any((root / ".remarksync-transactions").glob("*.json")):
+        raise RuntimeError("backup has an unfinished pull; finish or recover the pull before opening it")
     folders: dict[str, FolderItem] = {}
     docs: dict[str, DocItem] = {}
 
@@ -294,6 +319,9 @@ def safe_extract_names(names: Iterable[str], into: Path) -> None:
     """
     root = Path(into).resolve()
     for name in names:
+        normalized = name.replace("\\", "/")
+        if ntpath.splitdrive(name)[0] or ":" in normalized or ".." in normalized.split("/"):
+            raise ValueError(f"refusing to extract {name!r} outside {root}")
         target = (root / name).resolve()
         if target != root and root not in target.parents:
             raise ValueError(f"refusing to extract {name!r} outside {root}")
@@ -303,12 +331,17 @@ def open_rmdoc(path: Path, extract_dir: Path | None = None) -> DocItem:
     """Extract a .rmdoc archive and parse it into a single DocItem."""
     path = Path(path)
     tmp = Path(extract_dir) if extract_dir else Path(tempfile.mkdtemp(prefix="remarksync_"))
-    if tmp.exists():
-        shutil.rmtree(tmp, ignore_errors=True)
+    if tmp.exists() and any(tmp.iterdir()):
+        raise ValueError("archive extraction requires an empty destination")
     tmp.mkdir(parents=True, exist_ok=True)
 
     with zipfile.ZipFile(path) as zf:
         safe_extract_names(zf.namelist(), tmp)
+        entries = zf.infolist()
+        if len(entries) > 200_000 or sum(e.file_size for e in entries) > 8 * 1024**3:
+            raise ValueError("archive exceeds extraction limits")
+        if any(stat.S_ISLNK(e.external_attr >> 16) for e in entries):
+            raise ValueError("refusing archive link")
         zf.extractall(tmp)
 
     # archives may store entries at top level or under a single wrapper dir

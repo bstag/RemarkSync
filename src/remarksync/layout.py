@@ -18,7 +18,8 @@ was written past its edges (the tablet's canvas is effectively unbounded).
 
 The **paper** depends on the document kind:
 
-* a notebook page's paper is the tablet screen, 1404 x 1872;
+* a notebook page's paper is its declared tablet sheet, falling back to
+  1404 x 1872; a Paper Pro sheet is 1620 x 2160;
 * a document with a base PDF (pdf, epub) has as its paper the base page
   itself, placed the way the tablet places it: at a fixed
   :data:`PDF_SCALE` tablet pixels per PDF point, centred horizontally on
@@ -100,11 +101,11 @@ def placeholder_frame(page: PageRef, base_size: tuple[float, float] | None) -> P
     return lay_out(PageModel(), template=page.template, page_index=page.index, base_size=base_size)
 
 
-def base_page_rect(base_size: tuple[float, float]) -> Rect:
+def base_page_rect(base_size: tuple[float, float], paper_width: float = PAGE_WIDTH) -> Rect:
     """Where the tablet places a base PDF page of ``base_size`` (PDF points)
     in page coordinates: fixed scale, centred on the screen width, top at 0."""
     w, h = base_size[0] * PDF_SCALE, base_size[1] * PDF_SCALE
-    return ((PAGE_WIDTH - w) / 2, 0.0, w, h)
+    return ((paper_width - w) / 2, 0.0, w, h)
 
 
 def lay_out(
@@ -127,7 +128,7 @@ def lay_out(
     notebook can hold pages of either, so this cannot be a constant.
     """
     if base_size is not None:
-        paper: Rect = base_page_rect(base_size)
+        paper: Rect = base_page_rect(base_size, (page.paper_size or (PAGE_WIDTH, PAGE_HEIGHT))[0])
     else:
         sheet = page.paper_size or (PAGE_WIDTH, PAGE_HEIGHT)
         paper = (0.0, 0.0, float(sheet[0]), float(sheet[1]))
@@ -153,7 +154,7 @@ def lay_out(
 
     if base_size is not None:
         frame.underlay = paper
-    elif template and (page_index == 0 or frame.height <= PAGE_HEIGHT):
+    elif template and (page_index == 0 or frame.height <= ph):
         # only the first page of an endless canvas shows a template
         frame.template = template
 
@@ -185,12 +186,18 @@ def _extent(page: PageModel) -> tuple[list[float], list[float]]:
     xs: list[float] = []
     ys: list[float] = []
     for s in page.strokes:
+        if not s.layer_visible:
+            continue
         xs += [x for x, _ in s.points]
         ys += [y for _, y in s.points]
     for t in page.texts:
+        if not t.layer_visible:
+            continue
         xs += [t.pos_x, t.pos_x + t.width]
         ys += [t.pos_y, t.pos_y + t.height]
     for hl in page.highlights:
+        if not hl.layer_visible:
+            continue
         xs += [x for x, _, _, _ in hl.rectangles] + [x + w for x, _, w, _ in hl.rectangles]
         ys += [y for _, y, _, _ in hl.rectangles] + [y + h for _, y, _, h in hl.rectangles]
     return xs, ys

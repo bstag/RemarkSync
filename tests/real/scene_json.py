@@ -30,9 +30,13 @@ The dump is prospective: only pages saved *after* the variable is set produce
 one. So this works against a page created for the purpose rather than against
 existing notes, which is better anyway -- a fixture we control and can redraw.
 
+Current use (2026-10-03): live enablement instructions are retired. The earlier
+experiment description below is historical evidence; `steps` now refuses to
+provide firmware-modification commands. Offline `compare` remains available.
+
 Usage:
 
-    python -m tests.real.scene_json steps     # what to run on the tablet
+    python -m tests.real.scene_json steps     # refuses retired live-debug setup
     python -m tests.real.scene_json compare   # diff the dumps against our decode
 
 Nothing here touches the tablet. ``steps`` prints commands for a person to run,
@@ -60,60 +64,12 @@ CACHE = Path(os.environ.get("REMARKSYNC_SCENE_JSON", str(Path(os.environ["TEMP"]
 
 
 def steps() -> None:
-    """Print the commands to run on the tablet, to be run by a person.
-
-    Deliberately not automated. The tablet's SSH key here carries a
-    passphrase, and enabling the dump restarts xochitl, which interrupts
-    whatever is on screen. Both are decisions for whoever owns the device, so
-    this prints and explains rather than doing.
-    """
-    print("Two things to know before starting, both learned the hard way:\n")
-    print("  * Every page directory already holds <page-uuid>-metadata.json,")
-    print("    76 bytes of layer names. That is not a dump. Any command that")
-    print("    lists '*.json' will match those and look like success.")
-    print("  * SCENE_FILE_V6_DEBUG concerns v6 files. A notebook from")
-    print("    software 2.x stores v5 pages and will never dump, whatever is")
-    print("    enabled. The page has to be newly made.\n")
-    print("-" * 70)
-    print("\n1. Turn the dump on. This restarts the reMarkable UI, which takes")
-    print("   a few seconds and loses nothing:\n")
-    print(f"     ssh {HOST}")
-    print("     mkdir -p /etc/systemd/system/xochitl.service.d")
-    print("     printf '[Service]\\nEnvironment=SCENE_FILE_V6_DEBUG=1\\n' \\")
-    print("       > /etc/systemd/system/xochitl.service.d/debug.conf")
-    print("     systemctl daemon-reload && systemctl restart xochitl\n")
-    print("2. Confirm the running process actually has it, rather than")
-    print("   assuming the file took effect:\n")
-    print("     tr '\\0' '\\n' < /proc/$(pidof xochitl)/environ | grep SCENE_FILE")
-    print("     # expect: SCENE_FILE_V6_DEBUG=1\n")
-    print("3. On the tablet: create a NEW notebook. Type a few lines, then")
-    print("   draw ink well below the typed text so the page overflows, then")
-    print("   leave the page. Leaving it is what saves it.\n")
-    print("4. Find what the save wrote. Observed on 3.27 (Paper Pro): the dump")
-    print(f"   is {DUMP_SUFFIX}, a few hundred KB, beside the page:\n")
-    print(f"     ls -lt {REMOTE_DIR}/*/*{DUMP_SUFFIX} | head\n")
-    print("   The journal names it outright, which is the surer route if the")
-    print("   suffix differs on another firmware:\n")
-    print("     journalctl -u xochitl --since '-15 min' | grep rm.scenefile\n")
-    print("5. Copy it, naming it so the page can be matched afterwards. Set")
-    print("   the two uuids as variables so nothing has to be pasted twice:\n")
-    print("     DOC=e374df20-...        # the document directory")
-    print("     PAGE=62b91edb-...       # the page")
-    print("     # then, from Windows:")
-    print(f"     mkdir {CACHE}")
-    print(f"     scp {HOST}:{REMOTE_DIR}/$DOC/$PAGE{DUMP_SUFFIX} \\")
-    print(f"       {CACHE}\\${{DOC}}__${{PAGE}}.json\n")
-    print("6. Pull the backup so the same revision is compared, then diff:\n")
-    print("     .venv\\Scripts\\python -m remarksync pull C:\\Backups\\reMarkable\\raw")
-    print("     .venv\\Scripts\\python -m tests.real.device_pdf freshness")
-    print("     .venv\\Scripts\\python -m tests.real.scene_json compare\n")
-    print("-" * 70)
-    print("\nTo undo step 1:\n")
-    print("     rm /etc/systemd/system/xochitl.service.d/debug.conf")
-    print("     systemctl daemon-reload && systemctl restart xochitl\n")
-    print("Worth undoing: left on it writes a dump beside every page you edit.")
-    print("\nIf step 4 finds nothing, the switch does not do this on your")
-    print("firmware and this route is a dead end -- say so rather than hunting.")
+    """Retired after firmware debug mode produced unreadable scene files."""
+    raise SystemExit(
+        "Live scene-debug instructions are retired: SCENE_FILE_V6_DEBUG produced "
+        "unreadable .rm files and blank device exports on software 3.27. "
+        "Use only offline comparison of existing captures; see tests/real/README.md."
+    )
 
 
 def _summarise_ours(rm_path: Path) -> dict:
