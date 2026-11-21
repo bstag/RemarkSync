@@ -173,7 +173,7 @@ Private library: `https://server.tailnet.ts.net:8443/`.
 SSH: `$REMARKSYNC_SSH_HOST`. Initial acquisition/pairing release:
 `~/remarksync-preservation/releases/20261003-linux-01`.
 Earlier web release: `~/remarksync-preservation/releases/20261004-backup-01`.
-Current release for both services: `~/remarksync-preservation/releases/20261121-review-01`.
+Current release for both services: `~/remarksync-preservation/releases/20261121-leftovers-01`.
 No public Funnel endpoint was enabled. The web service listens through
 host-local `127.0.0.1:8787`; only the private Tailscale endpoint exposes it.
 
@@ -185,16 +185,17 @@ nothing on the server invokes it and the web container still has no credentials.
 
 | Service | Running image prefix | Contents |
 | --- | --- | --- |
-| `remarksync-sync-1` | `bc4104ff6da8` | Acquisition/export; marks documents the cloud no longer lists |
-| `remarksync-web-1` | `bc4104ff6da8` | Manifest with removal marks, status count, whole-library backup that keeps the marks |
+| `remarksync-sync-1` | `b89022aef7b5` | Acquisition/export; marks documents the cloud no longer lists |
+| `remarksync-web-1` | `b89022aef7b5` | Manifest with removal marks, status count, whole-library backup that keeps the marks |
 
-The review-pass image was deployed 2026-11-21 23:23 UTC, straight after a
-completed pass. It passed **166 Linux tests, two Windows-only skips** before the
+This image carries the review pass and its four follow-ups. It was deployed
+2026-11-21 23:39 UTC, straight after a completed pass (the review pass itself
+ran as `bc4104ff6da8` from 23:23). It passed **166 Linux tests, two Windows-only skips** before the
 switch; afterwards the read-only checker verified 58 documents, 11 folders, 69
 archives, 484 raw files, 18 PDFs/original attachments and 143 scene attachments.
 The first pass under it and a desktop download pass both ended `ok`.
-Rollback images are retained: `before-review-cleanup-20261121` (`9007e0e2b60e`,
-the previous image for both services), `before-removed-marking-20261121` (`320211395287`,
+Rollback images are retained: `before-leftovers-20261121` (`bc4104ff6da8`, the
+review pass), `before-review-cleanup-20261121` (`9007e0e2b60e`), `before-removed-marking-20261121` (`320211395287`,
 previous web) and `before-central-download-20261003` (`bc72ae4c437f`, previous
 sync). The VPS disk was 100% full beforehand; `docker image prune` removed 38
 untagged superseded images of other applications (19.97 GB), leaving it 45%
@@ -210,8 +211,10 @@ or login scheduled task was installed. See [settings](settings.md).
 
 ## Validation and known limits
 
-Latest complete checkout suite: **382 passed, 19 skipped** on Windows, after the
-2026-11-21 review pass. That pass fixed seven defects (Esc could abandon a running
+Latest complete checkout suite: **389 passed, 19 skipped** on Windows, after the
+2026-11-21 review pass and its follow-ups (one page order key for the editor and
+the compiler, pages painted at the display's pixel ratio, worker stops that do
+not hold the window, one-line errors from `scan`, `index` and `compile`). That pass fixed seven defects (Esc could abandon a running
 send; whole-library backups dropped the removed-from-tablet marks; a busy account
 ended `send` in a traceback; state files were read in the Windows locale encoding;
 the CLI overrode the dialog's saved destination; a failed base PDF left the window
