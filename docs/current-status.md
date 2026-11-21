@@ -173,7 +173,7 @@ Private library: `https://server.tailnet.ts.net:8443/`.
 SSH: `$REMARKSYNC_SSH_HOST`. Initial acquisition/pairing release:
 `~/remarksync-preservation/releases/20261003-linux-01`.
 Earlier web release: `~/remarksync-preservation/releases/20261004-backup-01`.
-Current release for both services: `~/remarksync-preservation/releases/20261121-removed-01`.
+Current release for both services: `~/remarksync-preservation/releases/20261121-review-01`.
 No public Funnel endpoint was enabled. The web service listens through
 host-local `127.0.0.1:8787`; only the private Tailscale endpoint exposes it.
 
@@ -185,13 +185,16 @@ nothing on the server invokes it and the web container still has no credentials.
 
 | Service | Running image prefix | Contents |
 | --- | --- | --- |
-| `remarksync-sync-1` | `9007e0e2b60e` | Acquisition/export; marks documents the cloud no longer lists |
-| `remarksync-web-1` | `9007e0e2b60e` | Manifest with removal marks, status count, whole-library backup |
+| `remarksync-sync-1` | `bc4104ff6da8` | Acquisition/export; marks documents the cloud no longer lists |
+| `remarksync-web-1` | `bc4104ff6da8` | Manifest with removal marks, status count, whole-library backup that keeps the marks |
 
-The new image passed **143 Linux tests, two Windows-only skips** before the
+The review-pass image was deployed 2026-11-21 23:23 UTC, straight after a
+completed pass. It passed **166 Linux tests, two Windows-only skips** before the
 switch; afterwards the read-only checker verified 58 documents, 11 folders, 69
 archives, 484 raw files, 18 PDFs/original attachments and 143 scene attachments.
-Rollback images are retained: `before-removed-marking-20261121` (`320211395287`,
+The first pass under it and a desktop download pass both ended `ok`.
+Rollback images are retained: `before-review-cleanup-20261121` (`9007e0e2b60e`,
+the previous image for both services), `before-removed-marking-20261121` (`320211395287`,
 previous web) and `before-central-download-20261003` (`bc72ae4c437f`, previous
 sync). The VPS disk was 100% full beforehand; `docker image prune` removed 38
 untagged superseded images of other applications (19.97 GB), leaving it 45%
@@ -214,10 +217,9 @@ ended `send` in a traceback; state files were read in the Windows locale encodin
 the CLI overrode the dialog's saved destination; a failed base PDF left the window
 half-switched; a mid-word line break miscounted characters), removed the unreachable
 trial dialog and other dead code, and gathered duplicated sync and worker-launch
-code into `store.py` and `workerprocess.py`. None of it has had a live run, and the
-deployed server image predates it: the server still runs release
-`20261121-removed-01`, whose Linux suite had **143 passed, two
-Windows-only skips**. Ruff passed across
+code into `store.py` and `workerprocess.py`. The server runs this
+code (see the deployment table above); the desktop editing, sending and window
+changes have not had a live run. Ruff passed across
 `src`, `tests`, `scripts` and `deploy/server`. Real-data/device oracles are opt-in;
 these counts do not mean every current device format has full rendering fidelity.
 Repository-tool verification is recorded separately in the housekeeping record below.

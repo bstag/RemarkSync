@@ -188,8 +188,10 @@ and GUI child-process passes reused all 54 entries without downloads.
 The updated web image was deployed without stopping cloud acquisition;
 the prior image is retained as `remarksync-server:before-central-download-20261003`.
 
-Since 2026-11-21 both services run image `9007e0e2b60e` from release
-`~/remarksync-preservation/releases/20261121-removed-01`; see
+Since 2026-11-21 both services run image `bc4104ff6da8` from release
+`~/remarksync-preservation/releases/20261121-review-01` (earlier that day:
+`9007e0e2b60e` from `20261121-removed-01`, kept as
+`remarksync-server:before-review-cleanup-20261121`); see
 [current status](../../docs/current-status.md). Before that the sync image was
 `bc72ae4c437f` and the web image `320211395287`. Recreate sync only straight
 after a completed pass.
