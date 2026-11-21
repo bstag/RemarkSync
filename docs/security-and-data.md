@@ -8,7 +8,10 @@ repository boundaries; it is not a complete security assessment.
 Viewing, search, handwriting recognition and compilation operate on local
 copies. TrOCR may download model weights; it does not send the user's ink to
 an external recognition API. Generated compiler archives are local until the
-user imports them through the official app or tablet USB interface.
+user imports them through the official app or tablet USB interface, or sends
+them with **Send Markdown to Tablet** / **Edit Document**. Those upload one
+chosen archive to reMarkable Cloud from the desktop, after a confirmation, and
+keep what was sent (and any version it replaced) under ignored `output/sent`.
 
 The tablet's account sync sends documents to reMarkable Cloud. The selected
 RemarkSync workflow downloads those documents to the user's own VPS,
@@ -100,7 +103,7 @@ check did not establish a credential exposure.
 
 ## Pending boundaries
 
-[Server uploads](spec/server-uploads.md) are proposed. They must use a dedicated
+Desktop sending uses the desktop's own cloud pairing. [Server uploads](spec/server-uploads.md) are proposed. They must use a dedicated
 validated submission path and worker, retain the web container's credential
 isolation, and require an explicit chosen document/destination. Preservation
 PDFs must never become automatic replacements for editable tablet archives.

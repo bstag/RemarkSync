@@ -1,6 +1,8 @@
 # Compile and send to tablet through the private server
 
-Status: **proposed, not implemented**. Recorded 2026-10-03 after the user asked
+Status: **proposed, not implemented**. Since 2026-11-21 the desktop app sends
+directly from the PC instead (see [current status](../current-status.md)); this
+document remains the design for sending through the server. Recorded 2026-10-03 after the user asked
 whether the existing Markdown-to-`.rmdoc` workflow can send documents through
 the central server. Repository housekeeping is being completed before this work.
 

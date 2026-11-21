@@ -5,6 +5,7 @@
     remarksync scan DIR        print the document tree of a backup
     remarksync index DIR       update the search index (--handwriting to recognise ink)
     remarksync compile MD OUT  compile Markdown to a .rmdoc
+    remarksync send FILE       send Markdown or a .rmdoc to the tablet as a new document
     remarksync export SRC OUT  preserve highlights and notes in a separate PDF
     remarksync cloud sync     acquire directly from reMarkable Cloud
     remarksync server-sync    download preserved documents from the central server
@@ -84,6 +85,11 @@ def main(argv: list[str] | None = None) -> int:
                            help="a backup folder, to compile for the tablet that wrote it")
     p_compile.add_argument("--paper", default=None, metavar="WxH",
                            help="page size in tablet pixels (e.g. 1620x2160); overrides --library")
+
+    p_send = sub.add_parser("send", help="send Markdown or a .rmdoc to the tablet through reMarkable Cloud, as a new document")
+    p_send.add_argument("file", type=str, help="a Markdown file (compiled first) or a .rmdoc archive")
+    p_send.add_argument("--name", default=None, help="name on the tablet (defaults to the file name)")
+    p_send.add_argument("--library", default=None, help="a backup folder, to compile Markdown for the tablet that wrote it")
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING)
@@ -279,6 +285,31 @@ def main(argv: list[str] | None = None) -> int:
         for error in report.errors:
             print(f"  failed: {error}")
         return 1 if report.failed else 0
+
+    if args.command == "send":
+        import tempfile
+        from pathlib import Path
+
+        from .cloud import CloudClient, CloudError, send
+
+        src = Path(args.file)
+        name = args.name or src.stem
+        try:
+            with tempfile.TemporaryDirectory(prefix="remarksync-send-") as temporary:
+                archive = src
+                if src.suffix.lower() != ".rmdoc":
+                    from .backup import device_paper_size
+                    from .mdcompile import markdown_to_rmdoc
+
+                    paper = device_paper_size(Path(args.library)) if args.library else None
+                    archive = markdown_to_rmdoc(src.read_text(encoding="utf-8"), name, Path(temporary) / "compiled.rmdoc", paper)
+                result = send(CloudClient(), archive, name)
+        except (CloudError, OSError) as exc:
+            print(f"not sent: {exc}")
+            return 1
+        print(f"'{name}' is already in the cloud with this content" if result["status"] == "already-sent" else
+              f"sent '{name}'; it appears on the tablet after its next sync")
+        return 0
 
     if args.command == "compile":
         from pathlib import Path

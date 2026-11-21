@@ -209,6 +209,17 @@ whole paragraphs over and the device wraps them, which is why the text metrics
 have to predict the device's line breaks rather than impose our own.
 _Avoid_: convert, export, render
 
+**Send**:
+Uploading one archive from this PC to the cloud source so the tablet receives
+it at its next sync, either as a new document or in place of the document it
+was edited from. Always asked for; never part of a sync.
+_Avoid_: sync, push, upload (for the user-facing action)
+
+**Draft**:
+A notebook loaded for editing, with the changes asked of it. It becomes an
+archive only when saved or sent; the document it came from is never written.
+_Avoid_: working copy, edit session
+
 **Target paper**:
 The paper a compiled archive is built for. Worth knowing because a taller page
 holds more, so it decides where the page breaks fall. Taken from the library

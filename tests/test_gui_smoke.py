@@ -593,3 +593,77 @@ def test_handwriting_toggle_without_an_engine_says_so(qapp, backup_root, monkeyp
     assert "no handwriting engine installed" in win.statusBar().currentMessage()
     assert win._library.handwriting is None
     win.close()
+
+
+def test_edit_dialog_edits_a_draft_and_never_sends_without_confirmation(qapp, backup_root, tmp_path, monkeypatch):
+    import zipfile
+
+    from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox
+    from remarksync import edit_dialog
+    from remarksync.backup import iter_docs, scan_backup
+    from remarksync.rmedit import Draft
+    from .conftest import JOURNAL_UUID, write_cpages_doc
+
+    pages = ["11111111-aaaa-4bbb-8ccc-00000000000%d" % i for i in range(3)]
+    write_cpages_doc(backup_root, JOURNAL_UUID, "2026", "", pages)
+    doc = next(d for d in iter_docs(scan_backup(backup_root)) if d.uuid == JOURNAL_UUID)
+    sends = []
+    monkeypatch.setattr(edit_dialog.Sender, "send", lambda self, archive, name, **kw: sends.append((archive, name, kw)))
+    dialog = edit_dialog.EditDialog(Draft.from_document(doc), sent_root=tmp_path / "sent")
+    assert dialog.page_list.count() == 3 and not dialog.replace_button.isEnabled()
+
+    dialog.page_list.setCurrentRow(0)
+    dialog.editor.setPlainText("# Coffee log\njournal page 0 entry about coffee")
+    assert dialog.draft.pages[0].changed and dialog.replace_button.isEnabled()
+    dialog._move(1)
+    dialog._duplicate()
+    assert dialog.page_list.count() == 4 and dialog.page_list.currentRow() == 2
+
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: QMessageBox.Cancel)
+    dialog.send_replace()
+    monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("Copy", True))
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.No)
+    dialog.send_copy()
+    assert sends == [] and not (tmp_path / "sent").exists()  # declined: nothing built, nothing sent
+
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: QMessageBox.Yes)
+    dialog.send_replace()
+    archive, name, options = sends[0]
+    assert name == "2026" and options["replace"] == dialog.draft.base_files and archive.is_file()
+    with zipfile.ZipFile(archive) as bundle:
+        assert JOURNAL_UUID + ".content" in bundle.namelist()  # a replacement keeps the document's identity
+    dialog._sent({"status": "sent", "name": "2026", "replaced": True, "kept": "somewhere"})
+    assert not dialog.replace_button.isEnabled() and "Replaced" in dialog.status.text()
+
+    out = tmp_path / "saved.rmdoc"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(out), ""))
+    dialog.save_as()
+    saved = Draft.from_archive(out)
+    assert saved.identifier != JOURNAL_UUID and saved.pages[1].text.startswith("# Coffee log")
+    original = Draft.from_document(next(d for d in iter_docs(scan_backup(backup_root)) if d.uuid == JOURNAL_UUID))
+    assert not original.pages[0].text.startswith("#")  # the library copy was never written
+
+
+def test_edit_action_is_for_notebooks_and_send_results_read_plainly(qapp, backup_root, monkeypatch):
+    from remarksync import edit_dialog
+    from remarksync.backup import iter_docs, scan_backup
+    from remarksync.gui import MainWindow
+    from .conftest import JOURNAL_UUID, PDF_UUID
+
+    monkeypatch.setattr(MainWindow, "_restore_state", lambda self: None)
+    win = MainWindow()
+    win.open_folder(backup_root)
+    docs = {d.uuid: d for d in iter_docs(scan_backup(backup_root))}
+    assert not win.edit_action.isEnabled()
+    win.show_doc(docs[PDF_UUID])
+    assert not win.edit_action.isEnabled()
+    win.show_doc(docs[JOURNAL_UUID])
+    assert win.edit_action.isEnabled()
+    win.edit_doc_action()
+    assert win._edit_dialogs[-1].draft.identifier == JOURNAL_UUID
+    win._edit_dialogs[-1].close()
+    _wait_for_pages(qapp, win)
+    assert edit_dialog.describe({"error": "x"}) == "Not sent: x"
+    assert "nothing was sent" in edit_dialog.describe({"status": "already-sent", "name": "n"})
+    assert "next sync" in edit_dialog.describe({"status": "sent", "name": "n", "replaced": False})
+    win.close()

@@ -1,4 +1,4 @@
-"""Private JSON-stdin interface for the cloud trial dialog."""
+"""Private JSON-stdin interface for the cloud dialogs: sync, pairing and sending."""
 import contextlib
 import json
 from pathlib import Path
@@ -31,13 +31,19 @@ def main() -> int:
                 from .cloudsync import sync
                 result = sync(client, Path(request["destination"]), pdfs_only=request.get("pdfs_only", False),
                               progress=lambda step: print(json.dumps({"event": "progress", **step}), file=wire, flush=True))
+            elif operation == "send":
+                from .cloud import send
+                result = send(CloudClient(), Path(request["archive"]), request["name"], folder=request.get("folder", ""),
+                              replace=request.get("replace"), keep=Path(request["keep"]) if request.get("keep") else None)
             else:
                 raise CloudError("Unsupported cloud operation.")
     except CloudError as exc:
         result = {"error": str(exc)}
     except Exception:
         # No raw client/network output or secrets in general diagnostics.
-        result = {"error": "Cloud trial failed validation or could not read the service. Existing archives were retained."}
+        result = {"error": ("Sending stopped on an unexpected error. Send again: an upload that did arrive is recognised, "
+                            "not duplicated.") if locals().get("operation") == "send" else
+                  "Cloud trial failed validation or could not read the service. Existing archives were retained."}
     print(json.dumps(result))
     return int("error" in result)
 

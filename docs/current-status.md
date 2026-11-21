@@ -39,7 +39,8 @@ remain supported. The central-server source is the selected workflow on this PC.
 | Whole-library backup | Retained raw revisions/completed PDFs, allowlisted metadata/checksums; offline `backup verify` and `backup restore` into a new directory |
 | Desktop server sync | Downloads server archives and existing PDFs, verifies hashes/file sets, retains previous copies and works offline |
 | Automatic PC checks | Every five minutes while RemarkSync is open; source/interval remembered; network failures back off |
-| Uploads | Compiler output can be manually imported using the official app or tablet USB interface; cloud sending inside RemarkSync is proposed, not implemented |
+| Editing | Notebook typed text and page list (reorder, duplicate, add, delete) in an in-app editor; ink is never re-encoded; see below |
+| Sending | From this PC through reMarkable Cloud: Markdown or an archive as a new document, or an edited notebook in place of its original; implemented 2026-11-21; one new document sent live, replacement not yet run live |
 
 Desktop downloads do not merge edits back to the tablet. The desktop initially
 downloads current published revisions; older history already on the server
@@ -53,6 +54,61 @@ without the server. Its recovery point is the last successful desktop download;
 it does not initially replicate all older server history or server credentials.
 The site's whole-library ZIP download additionally preserves retained server-only
 history. See [backup and restoration](backups.md).
+
+## Editing and sending to the tablet
+
+Added 2026-11-21. **Live evidence so far is one new document.** A Markdown note
+sent with `remarksync send` reached the cloud under its own name, and a repeat
+was refused as a duplicate name. The user confirmed it arrived on the tablet
+with editable text. **Replace on tablet has had no live run**, and neither has
+sending from the editor: the suite exercises both against a stand-in for the
+cloud client, and the edit code was run in memory over this PC's synced library
+(64 text pages rewritten with their ink bytes unchanged).
+
+The first live attempt found a fault the stand-in could not: given a full
+Windows path, the pinned client uses the whole path as the document's name.
+Two notes named after a temp path were created before this was seen. Uploads
+now pass a bare filename, and a send fails loudly if the document arrives under
+any other name or folder. For a replacement that name is what the client
+matches the old document by, so this check matters more there than here.
+
+- **Send Markdown to Tablet…** (Ctrl+Shift+M) compiles a Markdown file and
+  uploads it as a new notebook. `remarksync send FILE` does the same for a
+  Markdown file or an existing `.rmdoc`.
+- **Edit Document…** (Ctrl+D) opens the notebook on screen in an editor: change
+  a page's typed text, reorder, duplicate, add or delete pages. Then **Save as
+  .rmdoc…**, **Send to tablet as a new copy…** or **Replace on tablet…**.
+
+Sending goes from this PC straight to reMarkable Cloud with the pinned rmapi
+`put`; the tablet picks it up at its next sync. It needs this PC paired
+(**Library sync… → reMarkable Cloud directly → Pair account**), which is
+separate from the central server's pairing. Everything sent is kept under
+`output\sent`.
+
+What the editor will and will not touch:
+
+- Notebooks only. Annotated PDFs and EPUBs are refused.
+- A page's text is replaced by splicing a new text block into the page file;
+  every other byte is left as the tablet wrote it. Ink is never re-encoded.
+- A page is locked for text editing (it can still be moved, copied or deleted)
+  when handwriting is pinned to its text, when it has no text block, or when it
+  holds data RemarkSync cannot fully read.
+- Bold/italic runs inside a paragraph are not shown in the editor and are lost
+  from a page whose text is edited. Paragraph styles are kept.
+
+What **Replace on tablet** does, and its limits:
+
+- It is refused unless every file in the cloud still matches the copy the edit
+  was made from. If the tablet has synced any change since, sync here and redo
+  the edit.
+- The cloud's current version is downloaded to `output\sent\replaced` first.
+- The pinned client replaces by deleting the document and uploading the new
+  one, as two separate steps. If the upload fails in between, the document is
+  gone from the cloud until the saved version is sent again; the error names
+  the file.
+- Changes on the tablet that it has not synced yet are invisible to this check
+  and can be lost. Let the tablet sync before replacing.
+- The document keeps its name and folder. Renaming is not part of a replacement.
 
 ## How this installation has been used
 
@@ -152,10 +208,10 @@ Preservation output is not a claim of PDF/A conformance.
 
 ## Next work
 
-The next requested feature is **Compile and send to tablet** through the server.
-Its [proposed specification](spec/server-uploads.md) creates new documents first,
-with explicit selection, validation, visible status and duplicate-safe retries.
-The current web container has no cloud credentials and must retain that boundary.
+Sending and editing now exist on the desktop (above) and need the rest of their first live
+run: one replacement of a throwaway notebook, checked on the tablet. Sending **through the server** remains a
+[proposed specification](spec/server-uploads.md); the web container still has no
+cloud credentials and must retain that boundary.
 Off-server document backup exists through desktop downloads; the whole-library
 site ZIP additionally includes server-only history and has a successful real
 offline restore drill. Full replacement-server recovery (configuration/account

@@ -107,7 +107,8 @@ Windows client and verifies the release ZIP's SHA256. It uses rmapi only for
 pairing/listing. RemarkSync downloads every indexed document file by hash,
 checks sizes/SHA256, preserves exact raw content/metadata, exports notes,
 and checks that the cloud revision is still current before publication.
-Cloud documents are never uploaded, changed or deleted by this sync.
+Cloud documents are never uploaded, changed or deleted by this sync. Sending
+is a separate, explicit action (see below).
 Pairing/renewal registers account credentials through authentication POSTs.
 This uses a community client/protocol. A live trial matched all 49 files of
 one annotated PDF against the USB backup, preserving 338 highlights and 45
@@ -186,9 +187,13 @@ absent from the server remain locally available. Downloads include currently
 published revisions; earlier history already on the server stays there.
 The existing USB backup and direct-cloud store remain separate.
 
-Cloud sending from RemarkSync is the next proposed feature. The current
-compiler saves locally; there is no **Compile and send** button yet. See the
-[upload specification](docs/spec/server-uploads.md).
+**Send Markdown to Tablet…** and **Edit Document…** upload from this PC through
+reMarkable Cloud, once this PC is paired under **Library sync…**. An edited
+notebook can go up as a new copy or replace its original. Both are new and have
+not yet had a live run; read the limits in
+[current status](docs/current-status.md#editing-and-sending-to-the-tablet)
+before replacing anything you care about. Sending through the central server is
+still a [proposal](docs/spec/server-uploads.md).
 
 Terminal commands: `remarksync server-sync sync`, `server-sync watch --interval 300`,
 or `server-sync gui --auto`. Use `--server HTTPS_ADDRESS` and `--dest DIRECTORY`
@@ -281,7 +286,10 @@ claim of PDF/A compliance or exact device rendering.
 4. **Markdown → .rmdoc** (Ctrl+M): compile any `.md` into a notebook of
    editable text pages. Upload the `.rmdoc` via the tablet's USB web UI
    (http://10.11.99.1) or drag-and-drop into the reMarkable desktop app —
-   the text arrives fully editable on-device.
+   the text arrives fully editable on-device. **Send Markdown to Tablet…**
+   (Ctrl+Shift+M) compiles and uploads in one step instead.
+5. **Edit Document…** (Ctrl+D): edit the open notebook's typed text and page
+   order, then save it as a `.rmdoc` or send it to the tablet.
 5. **Open .rmdoc** (Ctrl+R) views any single archive without a library.
 
 ## What works on real files — and the known limits
@@ -482,8 +490,8 @@ The selected cloud workflow downloads tablet data from reMarkable Cloud to
 the private server and then to this PC over private Tailscale HTTPS. Automatic sync
 does not upload, edit or delete cloud documents. Account registration/renewal
 uses authentication requests; manual official-app/USB imports and explicitly
-invoked writing experiments can upload documents. Cloud sending inside
-RemarkSync remains proposed. See [data and repository hygiene](docs/security-and-data.md).
+invoked writing experiments can upload documents. Sending from RemarkSync
+uploads one chosen document, and only after you confirm it. See [data and repository hygiene](docs/security-and-data.md).
 
 Viewing, searching and compiling only **read** your backup, apart from two
 files they create inside it: the search index
@@ -592,8 +600,9 @@ packaged product: expect to read the code and the docs rather than an installer.
 The cloud side speaks reMarkable's undocumented sync protocol through a
 community client, which is the same footing as rmapi and rmfakecloud — it is not
 sanctioned by reMarkable, it has been changed by them before without notice, and
-acquisition here is deliberately read-only. Your account and your documents are
-your responsibility.
+acquisition here is deliberately read-only. Sending writes to the account through
+the same unsanctioned protocol, one document at a time and only when asked. Your
+account and your documents are your responsibility.
 
 MIT licensed; see [LICENSE](LICENSE). The separately distributed `ddvk/rmapi`
 client is AGPL and is downloaded at your request rather than bundled.

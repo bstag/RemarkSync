@@ -19,10 +19,12 @@ from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
     QFileDialog,
+    QInputDialog,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMessageBox,
     QScrollArea,
     QSizePolicy,
     QSplitter,
@@ -183,6 +185,11 @@ class MainWindow(QMainWindow):
         self.handwriting_action.setChecked(self.settings.value("handwriting", False, type=bool))
         self._on_handwriting_toggled(self.handwriting_action.isChecked())
         add_action("Compile Markdown → .rmdoc…", self.compile_md_action, "Ctrl+M")
+        add_action("Send Markdown to Tablet…", self.send_md_action, "Ctrl+Shift+M",
+                   "Compile a Markdown file and send it to your reMarkable account as a new notebook")
+        self.edit_action = add_action("Edit Document…", self.edit_doc_action, "Ctrl+D",
+                                      "Edit the open notebook's typed text and pages, then save it or send it to the tablet")
+        self.edit_action.setEnabled(False)
         self.export_action = add_action("Export Annotated PDF…", self.export_pdf_action, "Ctrl+E",
                                         "Save a preservation copy of the original PDF with visible highlights and notes")
         self.export_action.setEnabled(False)
@@ -322,6 +329,7 @@ class MainWindow(QMainWindow):
                 return
 
         self._active_doc = doc
+        self.edit_action.setEnabled(doc.file_type == "notebook")
         self.export_action.setEnabled(self._export_process is None and doc.file_type in ("pdf", "epub")
                                       and doc.resolve_base_pdf() is not None)
         self._target_page = page_no
@@ -642,7 +650,61 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Compiled {path}{for_paper} — upload it via the tablet's USB web UI.")
 
 
+    def send_md_action(self) -> None:
+        from .edit_dialog import Sender, describe, keep_archive
+
+        sender = getattr(self, "_md_sender", None)
+        if sender is None:
+            self._md_sender = sender = Sender(self)
+            sender.finished.connect(lambda result: self.statusBar().showMessage(describe(result)))
+        if sender.busy:
+            self.statusBar().showMessage("A document is still being sent.")
+            return
+        src, _ = QFileDialog.getOpenFileName(self, "Choose Markdown file to send", "", "Markdown (*.md *.markdown *.txt)")
+        if not src:
+            return
+        name, ok = QInputDialog.getText(self, "Send Markdown to tablet", "Name on the tablet:", text=Path(src).stem)
+        name = name.strip()
+        if not ok or not name:
+            return
+        try:
+            from .mdcompile import build_rmdoc, markdown_to_paragraphs, paginate
+            paper = self._library.paper_size if self._library is not None else None
+            pages = paginate(markdown_to_paragraphs(Path(src).read_text(encoding="utf-8")), paper)
+            data = build_rmdoc(name, pages, paper)
+        except Exception as exc:
+            self.statusBar().showMessage(f"Compile failed: {exc}")
+            return
+        for_paper = f", laid out for {paper[0]:.0f}x{paper[1]:.0f} pages" if paper else ""
+        if QMessageBox.question(self, "Send to tablet", f"Send '{name}' ({len(pages)} pages{for_paper}) to your "
+                                "reMarkable account as a new notebook?") != QMessageBox.Yes:
+            return
+        self.statusBar().showMessage(f"Sending '{name}' to the cloud…")
+        sender.send(keep_archive(data), name)
+
+    def edit_doc_action(self) -> None:
+        from .edit_dialog import EditDialog
+        from .rmedit import Draft, EditError
+
+        doc = getattr(self, "_active_doc", None)
+        if doc is None:
+            return
+        try:
+            draft = Draft.from_document(doc)
+        except (EditError, OSError) as exc:
+            self.statusBar().showMessage(f"Cannot edit {doc.name}: {exc}")
+            return
+        dialog = EditDialog(draft, self)
+        self._edit_dialogs = [d for d in getattr(self, "_edit_dialogs", []) if d.isVisible()] + [dialog]
+        dialog.show()
+
     def closeEvent(self, event) -> None:  # noqa: N802
+        sending = getattr(self, "_md_sender", None)
+        if (sending is not None and sending.busy) or any(d.sender_.busy for d in getattr(self, "_edit_dialogs", [])
+                                                         if d.isVisible()):
+            self.statusBar().showMessage("A document is still being sent; wait for it to finish before closing.")
+            event.ignore()
+            return
         cloud = getattr(self, "_cloud_dialog", None)
         if cloud is not None and cloud.process is not None:
             self.statusBar().showMessage("Wait for the cloud trial to finish before closing.")
