@@ -25,6 +25,20 @@ MARKER = ".remarksync-cloud-store.json"
 STATE = "sync-state.json"
 
 
+def mark_absent(documents: dict[str, dict], present) -> None:
+    """Note which preserved documents the source no longer lists.
+
+    A marker and nothing more: the record and its files stay, and the marker
+    goes the moment the source lists the document again. ``absent_since`` keeps
+    the first time it was seen gone.
+    """
+    for identifier, record in documents.items():
+        if identifier in present:
+            record.pop("absent_since", None)
+        else:
+            record.setdefault("absent_since", _now())
+
+
 def _now():
     return datetime.now(timezone.utc).isoformat()
 
@@ -270,6 +284,7 @@ def sync(client: CloudClient, destination: Path, *, pdfs_only: bool = False, pro
                                 except Exception:
                                     result["failed"].append({"document": identifier, "error": "Local publication failed; recovery/history retained."})
                 result["missing"] = sorted(set(state["documents"]) - set(all_remote))
+                mark_absent(state["documents"], all_remote)
             result["exports_available"] = sum(bool(record.get("pdf_sha256")) for record in state["documents"].values())
             state["status"] = "partial" if result["failed"] or result["pdf_failed"] else "ok"
             state["last_report"] = result

@@ -15,6 +15,7 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QSettings, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
@@ -172,6 +173,12 @@ class MainWindow(QMainWindow):
         add_action("Library sync…", self.cloud_trial_action, tip="Download updates from your central server or reMarkable Cloud")
         toolbar.addSeparator()
         add_action("Refresh", self.refresh, "F5")
+        self.removed_action = toolbar.addAction("Show Removed")
+        self.removed_action.setCheckable(True)
+        self.removed_action.setToolTip("Also list documents that were deleted on the tablet. Their preserved copies "
+                                       "are always kept; this only chooses whether the tree shows them.")
+        self.removed_action.setChecked(self.settings.value("show_removed", False, type=bool))
+        self.removed_action.toggled.connect(self._on_show_removed)
         self.index_action = add_action(
             "Update Search Index", self.update_index, "Ctrl+I",
             "Index new and changed documents in the background (click again to cancel)",
@@ -267,7 +274,10 @@ class MainWindow(QMainWindow):
         self._library = library
         self.settings.setValue("library_path", str(path))
         self._populate_tree()
-        self.statusBar().showMessage(f"{path} — {len(self._library)} documents")
+        gone = sum(1 for d in self._library.documents if d.uuid in self._library.absent)
+        self.statusBar().showMessage(f"{path} — {len(self._library) - gone} documents" + (
+            f"; {gone} removed from the tablet are kept" + ("" if self.removed_action.isChecked() else " (Show Removed lists them)")
+            if gone else ""))
 
     def refresh(self) -> None:
         if self._library is not None:
@@ -283,18 +293,41 @@ class MainWindow(QMainWindow):
         if self._library is None:
             return
 
-        def add_items(parent_widget, items):
+        absent = self._library.absent
+        removed: list[tuple[DocItem, str]] = []  # with the folder path it sat in
+
+        def add_items(parent_widget, items, path):
             for item in items:
                 if item.kind == "doc":
+                    if item.uuid in absent:
+                        removed.append((item, path))
+                        continue
                     label = f"🗎 {item.name}  ({len(item.pages)}p)"
                     node = QTreeWidgetItem(parent_widget, [label])
                 else:
                     node = QTreeWidgetItem(parent_widget, [f"📁 {item.name}"])
-                    add_items(node, item.children)
+                    add_items(node, item.children, f"{path}{item.name}/")
+                    if item.uuid in absent and not node.childCount():
+                        # a folder deleted on the tablet, with nothing left to show in it
+                        (node.parent() or self.doc_tree.invisibleRootItem()).removeChild(node)
+                        continue
                 node.setData(0, Qt.UserRole, item)
 
-        add_items(self.doc_tree, self._library.tree)
+        add_items(self.doc_tree, self._library.tree, "")
         self.doc_tree.expandToDepth(0)
+        if removed and self.removed_action.isChecked():
+            # after the expand, so the group starts collapsed
+            group = QTreeWidgetItem(self.doc_tree, [f"🗑 Removed from tablet ({len(removed)})"])
+            group.setToolTip(0, "Deleted on the tablet. The preserved copies stay here and can still be opened and searched.")
+            for item, path in sorted(removed, key=lambda pair: pair[0].name.lower()):
+                node = QTreeWidgetItem(group, [f"🗎 {item.name}  ({len(item.pages)}p)" + (f"  — was in {path[:-1]}" if path else "")])
+                node.setForeground(0, self.palette().color(QPalette.Disabled, QPalette.Text))
+                node.setToolTip(0, f"Gone from the tablet since {absent[item.uuid]}")
+                node.setData(0, Qt.UserRole, item)
+
+    def _on_show_removed(self, on: bool) -> None:
+        self.settings.setValue("show_removed", on)
+        self._populate_tree()
 
     def _on_tree_click(self, node: QTreeWidgetItem, _col: int) -> None:
         item = node.data(0, Qt.UserRole)

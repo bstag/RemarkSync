@@ -271,3 +271,52 @@ def test_folder_and_notebook_archives_download_without_rendering(tmp_path):
         assert serversync.sync(remote, local)['unchanged'] == [folder, notebook]
     tree = scan_backup(local / 'raw')
     assert tree[0].kind == 'folder' and tree[0].children[0].name == 'Notebook'
+
+
+def test_tablet_delete_is_marked_through_to_the_desktop_and_unmarked_on_return(hosted):
+    """A document removed on the tablet stays preserved at every hop, carries a
+    marker saying so, and loses the marker if the tablet has it again."""
+    from remarksync.library import Library
+    central, local, client = hosted
+    entry = client.remote.pop(IDENTIFIER)  # deleted on the tablet
+    assert cloudsync.sync(client, central)['missing'] == [IDENTIFIER]
+    since = json.loads((central / cloudsync.STATE).read_text())['documents'][IDENTIFIER]['absent_since']
+    cloudsync.sync(client, central)
+    assert json.loads((central / cloudsync.STATE).read_text())['documents'][IDENTIFIER]['absent_since'] == since  # first seen
+    with running(central) as base:
+        import urllib.request
+        assert json.load(urllib.request.urlopen(base + '/manifest'))['documents'][IDENTIFIER]['absent_since'] == since
+        assert json.load(urllib.request.urlopen(base + '/status'))['removed_from_tablet'] == 1
+        assert b'Removed from the tablet' in urllib.request.urlopen(base + '/').read()
+        serversync.sync(serversync.ServerClient(base), local)
+        library = Library(local / 'raw')
+        assert library.absent == {IDENTIFIER: since} and library.document(IDENTIFIER) is not None  # kept, and known gone
+        client.remote[IDENTIFIER] = entry  # back on the tablet
+        cloudsync.sync(client, central)
+        serversync.sync(serversync.ServerClient(base), local)
+        library.rescan()
+        assert library.absent == {}
+        assert 'absent_since' not in json.loads((local / cloudsync.STATE).read_text())['documents'][IDENTIFIER]
+
+
+def test_document_the_server_stops_listing_is_marked_locally(hosted):
+    central, local, _client = hosted
+    with running(central) as base:
+        serversync.sync(serversync.ServerClient(base), local)
+        state = json.loads((central / cloudsync.STATE).read_text())
+        state['documents'] = {}
+        (central / cloudsync.STATE).write_text(json.dumps(state))
+        serversync.sync(serversync.ServerClient(base), local)
+    assert json.loads((local / cloudsync.STATE).read_text())['documents'][IDENTIFIER]['absent_since']
+    assert (local / 'raw' / f'{IDENTIFIER}.metadata').is_file()
+
+
+def test_manifest_with_a_malformed_absence_marker_is_refused(hosted):
+    central, _local, _client = hosted
+    state = json.loads((central / cloudsync.STATE).read_text())
+    manifest = {'format': 'remarksync-library-v1', 'status': 'ok', 'documents': copy.deepcopy(state['documents'])}
+    serversync.validate_manifest(copy.deepcopy(manifest))
+    for bad in (5, '', 'x' * 41, ['2026']):
+        manifest['documents'][IDENTIFIER]['absent_since'] = bad
+        with pytest.raises(ValueError, match='absence'):
+            serversync.validate_manifest(copy.deepcopy(manifest))

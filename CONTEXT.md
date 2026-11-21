@@ -64,6 +64,11 @@ A verified local copy of the central server's published archives and PDFs,
 usable offline and refreshed independently of the tablet.
 _Avoid_: two-way sync, upload
 
+**Removed from tablet**:
+A preserved document the cloud source no longer lists. It is marked with when
+that was first seen and kept in full; the mark only changes how it is shown.
+_Avoid_: deleted, pruned, missing (the sync report's word for one pass)
+
 **Whole-library backup**:
 A portable copy of retained document revisions, preservation PDFs and the
 information needed to verify them and reconstruct the current library.

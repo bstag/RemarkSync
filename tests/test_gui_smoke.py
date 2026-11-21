@@ -667,3 +667,39 @@ def test_edit_action_is_for_notebooks_and_send_results_read_plainly(qapp, backup
     assert "nothing was sent" in edit_dialog.describe({"status": "already-sent", "name": "n"})
     assert "next sync" in edit_dialog.describe({"status": "sent", "name": "n", "replaced": False})
     win.close()
+
+
+def test_documents_removed_from_the_tablet_are_hidden_until_asked_for(qapp, backup_root, tmp_path, monkeypatch):
+    import json
+    import shutil
+
+    from remarksync.gui import MainWindow
+    from .conftest import DIARY_UUID, FOLDER_UUID, JOURNAL_UUID
+
+    raw = tmp_path / "store" / "raw"
+    shutil.copytree(backup_root, raw, ignore=shutil.ignore_patterns("store"))
+    (raw.parent / "sync-state.json").write_text(json.dumps({"documents": {
+        DIARY_UUID: {"absent_since": "2026-11-21T10:00:00Z"}, JOURNAL_UUID: {"absent_since": "2026-11-20T09:00:00Z"},
+        FOLDER_UUID: {}}}), encoding="utf-8")
+    monkeypatch.setattr(MainWindow, "_restore_state", lambda self: None)
+    win = MainWindow()
+    win.open_folder(raw)
+
+    def labels(node=None):
+        node = node or win.doc_tree.invisibleRootItem()
+        return [node.child(i).text(0) for i in range(node.childCount())] + [
+            text for i in range(node.childCount()) for text in labels(node.child(i))]
+
+    assert not any("Diary 2026" in text or "🗎 2026" in text or "Removed" in text for text in labels())
+    assert any("Ink Notes" in text for text in labels()) and "2 removed from the tablet are kept" in win.statusBar().currentMessage()
+    win.removed_action.setChecked(True)
+    group = win.doc_tree.topLevelItem(win.doc_tree.topLevelItemCount() - 1)
+    assert group.text(0) == "🗑 Removed from tablet (2)" and not group.isExpanded()
+    removed = [group.child(i).text(0) for i in range(group.childCount())]
+    assert removed[0].startswith("🗎 2026") and removed[0].endswith("— was in Research") and "Diary 2026" in removed[1]
+    win._on_tree_click(group.child(1), 0)  # a removed document still opens
+    assert win._active_doc.uuid == DIARY_UUID
+    _wait_for_pages(qapp, win)
+    win.removed_action.setChecked(False)
+    assert not any("Removed" in text for text in labels())
+    win.close()

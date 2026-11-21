@@ -188,10 +188,11 @@ and GUI child-process passes reused all 54 entries without downloads.
 The updated web image was deployed without stopping cloud acquisition;
 the prior image is retained as `remarksync-server:before-central-download-20261003`.
 
-The running sync image is `bc72ae4c437f`; the running web image is
-`320211395287`. Both use `unless-stopped`. The `remarksync-server:local` tag
-now refers to the newer web-capable image. Recreating sync from that tag will
-also update acquisition; schedule that deliberately after a completed pass.
+Since 2026-11-21 both services run image `9007e0e2b60e` from release
+`~/remarksync-preservation/releases/20261121-removed-01`; see
+[current status](../../docs/current-status.md). Before that the sync image was
+`bc72ae4c437f` and the web image `320211395287`. Recreate sync only straight
+after a completed pass.
 The backup feature updated only web from release
 `~/remarksync-preservation/releases/20261004-backup-01`; the original
 acquisition/pairing release remains in place. The previous web image is tagged

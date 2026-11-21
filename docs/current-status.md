@@ -39,8 +39,18 @@ remain supported. The central-server source is the selected workflow on this PC.
 | Whole-library backup | Retained raw revisions/completed PDFs, allowlisted metadata/checksums; offline `backup verify` and `backup restore` into a new directory |
 | Desktop server sync | Downloads server archives and existing PDFs, verifies hashes/file sets, retains previous copies and works offline |
 | Automatic PC checks | Every five minutes while RemarkSync is open; source/interval remembered; network failures back off |
+| Tablet deletes | A document deleted on the tablet stays preserved and is marked `absent_since`; the tree hides it unless **Show Removed** is on. Added and deployed 2026-11-21 |
 | Editing | Notebook typed text and page list (reorder, duplicate, add, delete) in an in-app editor; ink is never re-encoded; see below |
 | Sending | From this PC through reMarkable Cloud: Markdown or an archive as a new document, or an edited notebook in place of its original; implemented 2026-11-21; one new document sent live, replacement not yet run live |
+
+A delete on the tablet is never copied here as a delete. Each acquisition pass
+marks the records the cloud no longer lists with the time that was first seen
+(`absent_since`) and clears the mark if the document is listed again. The mark
+travels in the server manifest to the desktop, where the document tree leaves
+marked documents out and **Show Removed** lists them in a group of their own.
+Files, revisions, PDFs and search results are unaffected. Deployed 2026-11-21:
+the first pass on the new image marked five documents, and the next desktop
+download carried all five marks to this PC.
 
 Desktop downloads do not merge edits back to the tablet. The desktop initially
 downloads current published revisions; older history already on the server
@@ -162,23 +172,31 @@ Server: Ubuntu 24.04.4, x86-64, 4 vCPUs, 8 GB RAM, 60 GB storage.
 Private library: `https://server.tailnet.ts.net:8443/`.
 SSH: `$REMARKSYNC_SSH_HOST`. Initial acquisition/pairing release:
 `~/remarksync-preservation/releases/20261003-linux-01`.
-Current web release: `~/remarksync-preservation/releases/20261004-backup-01`.
+Earlier web release: `~/remarksync-preservation/releases/20261004-backup-01`.
+Current release for both services: `~/remarksync-preservation/releases/20261121-removed-01`.
 No public Funnel endpoint was enabled. The web service listens through
 host-local `127.0.0.1:8787`; only the private Tailscale endpoint exposes it.
 
-Both containers were observed running with `unless-stopped` on 2026-10-04 UTC.
-Their images intentionally differ: the web endpoint was updated without
-interrupting cloud acquisition.
+Both containers were recreated from one image on 2026-11-21 18:27 UTC, straight
+after a completed pass, and run with `unless-stopped`. This was the first
+update of the acquisition container since 2026-10-03, so it also picked up
+everything built in between. The image contains the desktop's sending code;
+nothing on the server invokes it and the web container still has no credentials.
 
 | Service | Running image prefix | Contents |
 | --- | --- | --- |
-| `remarksync-sync-1` | `bc72ae4c437f` | Acquisition/export including yellow placeholder correction and retained renderings |
-| `remarksync-web-1` | `320211395287` | Desktop manifest plus streaming whole-library backup and offline restore support |
+| `remarksync-sync-1` | `9007e0e2b60e` | Acquisition/export; marks documents the cloud no longer lists |
+| `remarksync-web-1` | `9007e0e2b60e` | Manifest with removal marks, status count, whole-library backup |
 
-The image tag `remarksync-server:local` points to the newer image. A future
-Compose recreation can therefore update sync to that image; do this deliberately,
-after a complete pass. Rollback images are retained; no unrelated VPS services
-were modified. See the [server runbook](../deploy/server/README.md).
+The new image passed **143 Linux tests, two Windows-only skips** before the
+switch; afterwards the read-only checker verified 58 documents, 11 folders, 69
+archives, 484 raw files, 18 PDFs/original attachments and 143 scene attachments.
+Rollback images are retained: `before-removed-marking-20261121` (`320211395287`,
+previous web) and `before-central-download-20261003` (`bc72ae4c437f`, previous
+sync). The VPS disk was 100% full beforehand; `docker image prune` removed 38
+untagged superseded images of other applications (19.97 GB), leaving it 45%
+used. No other service was stopped or changed. Watchtower leaves an old image
+behind on every update, so the disk will fill again without periodic pruning. See the [server runbook](../deploy/server/README.md).
 
 This PC: source `server`, five-minute automatic checks, destination
 the checkout's `output\server-sync`, open library its `raw` subdirectory.

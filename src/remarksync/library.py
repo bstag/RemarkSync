@@ -14,6 +14,7 @@ run a long operation on a worker thread. No Qt dependencies here.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from .backup import DocItem, iter_docs, scan_backup
@@ -39,6 +40,7 @@ class Library:
         self._index = SearchIndex(self.index_path)
         self.recognition = RecognitionCache(self.root / CACHE_NAME)
         self._paper: tuple[float, float] | None | str = "unread"
+        self.absent: dict[str, str] = {}
         self._engine = engine
         self.handwriting = handwriting
         self.rescan()
@@ -80,6 +82,19 @@ class Library:
         self.tree = scan_backup(self.root)
         self._docs = {d.uuid: d for d in iter_docs(self.tree)}
         self._paper = "unread"
+        self.absent = self._read_absent()
+
+    def _read_absent(self) -> dict[str, str]:
+        """Documents and folders the tablet no longer has, with when that was
+        first seen. Only a synced library knows: the sync keeps this beside the
+        ``raw`` folder. They stay in ``tree``; a caller decides how to show them.
+        """
+        try:
+            state = json.loads((self.root.parent / "sync-state.json").read_text(encoding="utf-8"))
+            return {key: str(record["absent_since"]) for key, record in state["documents"].items()
+                    if isinstance(record, dict) and record.get("absent_since")}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return {}
 
     @property
     def documents(self) -> list[DocItem]:

@@ -21,7 +21,7 @@ import zipfile
 from .backup import safe_extract_names
 from .backupstore import publish, recover, write_json, writer_lock
 from .cloud import CloudError, HASH, _digest
-from .cloudsync import STATE, _catalog, _now, _verify_files, preservation_pdf
+from .cloudsync import STATE, _catalog, _now, _verify_files, mark_absent, preservation_pdf
 from .pull import _document_entries, _move_document, _validate_document, local_signature
 
 SERVER_ENV = "REMARKSYNC_SERVER"
@@ -121,6 +121,9 @@ def validate_manifest(data: dict) -> dict:
         safe_extract_names(seen, Path(tempfile.gettempdir()) / "remarksync-manifest-check")
         if size > MAX_ARTIFACT or f"{identifier}.metadata" not in seen:
             raise ValueError("Incomplete or oversized source")
+        since = record.get("absent_since")
+        if since is not None and (not isinstance(since, str) or not 0 < len(since) <= 40):
+            raise ValueError("Invalid absence marker")
         if not isinstance(record.get("warnings", []), list) or any(not isinstance(w, str) for w in record.get("warnings", [])):
             raise ValueError("Invalid export warnings")
     return data
@@ -233,6 +236,9 @@ def sync(client: ServerClient, destination: Path, *, progress=None) -> dict:
                         result["failed"].append({"document": identifier, "error": str(exc) if isinstance(exc, CloudError)
                                                  else "Server download/publication failed; prior copies are retained."})
             result["missing"] = sorted(set(state["documents"]) - set(remote["documents"]))
+            # The server marks what the tablet removed; what the server itself
+            # no longer lists is marked here. Neither removes anything.
+            mark_absent({key: state["documents"][key] for key in result["missing"]}, ())
         result["exports_available"] = sum(bool(r.get("pdf_sha256")) for r in state["documents"].values())
         state["status"] = "partial" if result["failed"] or remote["status"] != "ok" else "ok"
         state["last_report"] = result

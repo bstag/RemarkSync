@@ -44,6 +44,8 @@ def _index(state: dict) -> bytes:
         prefix = f'/revisions/{identifier}/{record["revision"]}/'
         pdf = f'<a href="{prefix}annotated.pdf">Open PDF</a>' if record.get("pdf_sha256") else ""
         note = "Export needs attention; raw archive preserved." if record.get("pdf_error") else ""
+        if record.get("absent_since"):
+            note = "Removed from the tablet; this preserved copy is kept. " + note
         if record.get("warnings"):
             note += " Export warnings are recorded in the PDF's preservation manifest."
         rows.append('<tr><td>' + html.escape(record["name"]) + '</td><td>' + pdf
@@ -159,13 +161,14 @@ def handler(root: Path):
                           "last_attempt": state.get("last_attempt"),
                           "documents": sum(record.get("kind") == "DocumentType" for record in state["documents"].values()),
                           "pdfs": sum(bool(record.get("pdf_sha256")) for record in state["documents"].values()),
+                          "removed_from_tablet": sum(bool(record.get("absent_since")) for record in state["documents"].values()),
                           "acquisition_failures": len(report.get("failed", [])), "export_failures": len(report.get("pdf_failed", []))}
                 self._body(json.dumps(status).encode(), "application/json")
                 return
             if path == "/manifest":
                 # Explicit allowlist: never expose local paths, diagnostics or credentials.
                 fields = ("document", "revision", "name", "kind", "file_type", "files",
-                          "archive_sha256", "pdf_sha256", "pages", "warnings", "pdf_error")
+                          "archive_sha256", "pdf_sha256", "pages", "warnings", "pdf_error", "absent_since")
                 manifest = {"format": "remarksync-library-v1", "status": state.get("status"),
                             "last_success": state.get("last_success"),
                             "documents": {key: {field: record[field] for field in fields if field in record}
