@@ -188,3 +188,15 @@ def test_only_notebooks_with_a_modern_page_list_are_editable():
     files[DOC + ".content"] = json.dumps({"fileType": "notebook", "pages": ["0"]}).encode()
     with pytest.raises(rmedit.EditError, match="older page list"):
         rmedit.Draft(DOC, files)
+
+
+def test_an_edited_notebook_is_numbered_with_the_compilers_page_keys():
+    from remarksync.mdcompile import page_order_key
+
+    draft = rmedit.Draft(DOC, notebook())
+    draft.duplicate(0)
+    with zipfile.ZipFile(io.BytesIO(draft.build())) as bundle:
+        content = json.loads(bundle.read(DOC + ".content"))
+    live = [p for p in content["cPages"]["pages"] if not (p.get("deleted") or {}).get("value")]
+    keys = sorted(p["idx"]["value"] for p in live)
+    assert keys == [page_order_key(i) for i in range(len(live))] and keys[0] == "baa"

@@ -939,3 +939,59 @@ def test_sync_action_keeps_one_controller_and_close_message_names_the_sync(qapp,
     assert not win.close() and "library sync" in win.statusBar().currentMessage()
     dialog.process = None
     assert win.close()
+
+
+@pytest.mark.parametrize('operation', ['indexing', 'decoding'])
+def test_a_slow_stop_finishes_in_the_background_and_then_continues(qapp, monkeypatch, operation):
+    import threading
+    from types import SimpleNamespace
+
+    from PySide6.QtCore import QThread
+
+    from remarksync import gui
+    monkeypatch.setattr(gui.MainWindow, '_restore_state', lambda self: None)
+    monkeypatch.setattr(gui, 'STOP_WAIT_MS', 10)
+    release = threading.Event()
+
+    class Slow(QThread):
+        def run(self):
+            release.wait(10)
+
+    win = gui.MainWindow()
+    prefix = '_index' if operation == 'indexing' else '_decode'
+    thread = Slow(win)
+    setattr(win, prefix + '_thread', thread)
+    setattr(win, prefix + '_worker', SimpleNamespace(cancel=lambda: None))
+    stop = win._stop_indexing if operation == 'indexing' else win._stop_decoding
+    continued = []
+    thread.start()
+    try:
+        assert not stop(then=lambda: continued.append('first'))
+        assert not stop(then=lambda: continued.append('latest'))  # the latest request wins
+        assert 'continuing when it finishes' in win.statusBar().currentMessage() and continued == []
+        release.set()
+        assert thread.wait(5000)
+        for _ in range(50):
+            qapp.processEvents()
+        assert continued == ['latest']
+        assert stop() and getattr(win, prefix + '_thread') is None
+    finally:
+        release.set()
+        thread.wait(5000)
+        win.close()
+
+
+def test_pages_are_painted_at_the_displays_pixel_ratio(qapp, backup_root, monkeypatch):
+    from remarksync import viewer
+    from remarksync.backup import iter_docs, scan_backup
+
+    doc = next(iter_docs(scan_backup(backup_root)))
+    canvas = viewer.PageCanvas(doc, doc.pages[0], None, scale=0.25)
+    painted = []
+    real_put = viewer._painted_pages.put
+    monkeypatch.setattr(viewer._painted_pages, 'put', lambda key, pix: painted.append(pix) or real_put(key, pix))
+    monkeypatch.setattr(canvas, 'devicePixelRatioF', lambda: 2.0)
+    canvas.grab()
+    assert painted and painted[-1].devicePixelRatio() == 2.0
+    assert painted[-1].width() == canvas.width() * 2 and painted[-1].height() == canvas.height() * 2
+    canvas.deleteLater()

@@ -46,6 +46,10 @@ from .workerprocess import start_json_worker
 
 log = logging.getLogger(__name__)
 
+# How long stopping a worker may hold the window. One that needs longer (a page
+# of handwriting mid-recognition) finishes in the background instead.
+STOP_WAIT_MS = 250
+
 
 class DecodeWorker(QObject):
     """Decodes and lays out a document's pages on a worker thread, starting
@@ -155,6 +159,7 @@ class MainWindow(QMainWindow):
         self._recognitions_before = 0
         self._cloud_dialog = None
         self._extraction = None  # the temporary folder behind an opened .rmdoc
+        self._deferred = {}  # worker thread still stopping -> what to do once it has
         self._md_sender = None
         self._edit_dialogs: list = []
         self._fill_timer = QTimer(self)  # adds a long document's placeholder canvases in batches
@@ -290,7 +295,7 @@ class MainWindow(QMainWindow):
             if not chosen:
                 return
             path = Path(chosen)
-        if not self._stop_indexing():  # a running index belongs to the old library
+        if not self._stop_indexing(then=lambda: self.open_folder(path)):  # a running index belongs to the old library
             return
         try:
             library = Library(path)
@@ -366,7 +371,7 @@ class MainWindow(QMainWindow):
     def show_doc(self, doc: DocItem, page_no: int | None = None) -> None:
         """Open a document: placeholder canvases appear at once, a worker
         decodes the pages (the requested page first) and fills them in."""
-        if not self._stop_decoding():
+        if not self._stop_decoding(then=lambda: self.show_doc(doc, page_no)):
             return
         self._fill_timer.stop()
         for canvas in self._canvases:
@@ -454,15 +459,33 @@ class MainWindow(QMainWindow):
         self._decode_thread, self._decode_worker = thread, worker
         thread.start()
 
-    def _stop_decoding(self) -> bool:
+    def _defer_until_stopped(self, thread, then, what: str) -> None:
+        """A worker that has not stopped within ``STOP_WAIT_MS`` finishes in the
+        background rather than holding the window. ``then`` is what the caller
+        was about to do; it runs when the thread ends (the latest request wins)."""
+        if then is None:
+            self.statusBar().showMessage(f"{what} is still stopping; try again when it finishes.")
+            return
+        self.statusBar().showMessage(f"{what} is still stopping; continuing when it finishes.")
+        first = thread not in self._deferred
+        self._deferred[thread] = then
+        if first:
+            thread.finished.connect(self._run_deferred)
+
+    def _run_deferred(self) -> None:
+        for thread in [t for t in self._deferred if t.isFinished()]:
+            self._deferred.pop(thread)()
+
+    def _stop_decoding(self, then=None) -> bool:
         if self._decode_thread is None:
             return True
         if self._decode_worker is not None:
             self._decode_worker.cancel()
         self._decode_thread.quit()
-        if not self._decode_thread.wait(30_000):
-            self.statusBar().showMessage("Page decoding is still stopping; try again when it finishes.")
+        if not self._decode_thread.wait(STOP_WAIT_MS):
+            self._defer_until_stopped(self._decode_thread, then, "Page decoding")
             return False
+        self._deferred.pop(self._decode_thread, None)
         self._decode_thread.deleteLater()
         self._decode_thread, self._decode_worker = None, None
         return True
@@ -505,7 +528,7 @@ class MainWindow(QMainWindow):
 
     def rebuild_index(self) -> None:
         """Re-index everything from scratch (cancels a running update first)."""
-        if self._stop_indexing():
+        if self._stop_indexing(then=self.rebuild_index):
             self._start_indexing(force=True)
 
     def cancel_indexing(self) -> None:
@@ -517,7 +540,8 @@ class MainWindow(QMainWindow):
         if self._library is None:
             self.statusBar().showMessage("Open a library folder first.")
             return
-        if not self._stop_indexing():  # also lets go of the previous run's finished thread
+        # also lets go of the previous run's finished thread
+        if not self._stop_indexing(then=lambda: self._start_indexing(force)):
             return
         self._library.handwriting = self.handwriting_action.isChecked()
         self._handwriting_missing = self.handwriting_action.isChecked() and not self._library.handwriting
@@ -551,15 +575,17 @@ class MainWindow(QMainWindow):
             return " (no handwriting engine installed — typed text only; see README: pip install -e .[handwriting])"
         return ""
 
-    def _stop_indexing(self) -> bool:
-        """Cancel a running index and wait for its thread to finish."""
+    def _stop_indexing(self, then=None) -> bool:
+        """Cancel a running index. False while it is still stopping; ``then``
+        is run once it has."""
         if self._index_thread is None:
             return True
         self.cancel_indexing()
         self._index_thread.quit()
-        if not self._index_thread.wait(30_000):
-            self.statusBar().showMessage("Indexing is still stopping; try again when it finishes.")
+        if not self._index_thread.wait(STOP_WAIT_MS):
+            self._defer_until_stopped(self._index_thread, then, "Indexing")
             return False
+        self._deferred.pop(self._index_thread, None)
         self._index_thread.deleteLater()
         self._index_thread, self._index_worker = None, None
         self.index_action.setText("Update Search Index")
@@ -786,8 +812,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("PDF export is still running; wait for it to finish before closing.")
             event.ignore()
             return
-        if not self._stop_indexing() or not self._stop_decoding():
-            event.ignore()
+        if not self._stop_indexing(then=self.close) or not self._stop_decoding(then=self.close):
+            event.ignore()  # the window closes itself once the worker has stopped
             return
         super().closeEvent(event)
 

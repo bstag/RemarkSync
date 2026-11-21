@@ -335,3 +335,16 @@ def test_pull_command_reports_a_failure_in_one_line(tmp_path, monkeypatch, capsy
     monkeypatch.setattr(module.SshTablet, 'read_signatures', unreachable)
     assert main(['pull', str(tmp_path / 'backup')]) == 1
     assert capsys.readouterr().err.strip() == 'pull failed: ssh/tar failed with code 255'
+
+
+@pytest.mark.parametrize('arguments', [['scan', 'missing'], ['index', 'missing'], ['compile', 'missing.md', 'out.rmdoc']])
+def test_local_commands_report_a_bad_path_in_one_line(tmp_path, monkeypatch, capsys, arguments):
+    from remarksync.__main__ import main
+
+    monkeypatch.chdir(tmp_path)
+    assert main(arguments) == 1
+    captured = capsys.readouterr()
+    assert captured.err.startswith(arguments[0] + ' failed: ') and captured.err.count('\n') == 1
+    assert 'total docs' not in captured.out
+    with pytest.raises((OSError, ValueError)):  # --verbose keeps the traceback
+        main(['--verbose'] + arguments)

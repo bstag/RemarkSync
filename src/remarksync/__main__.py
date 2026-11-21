@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sqlite3
 import sys
 
 
@@ -192,12 +193,21 @@ def _cmd_pull(args) -> int:
     return 0
 
 
-def _cmd_scan(args) -> int:
+def _folder(root: str):
+    """A library folder named on the command line, which has to exist: an
+    empty tree for a mistyped path reads as a library with nothing in it."""
     from pathlib import Path
+
+    if not Path(root).is_dir():
+        raise ValueError(f"{root} is not a folder")
+    return Path(root)
+
+
+def _cmd_scan(args) -> int:
 
     from .library import Library
 
-    library = Library(Path(args.root))
+    library = Library(_folder(args.root))
 
     def show(items, indent=0):
         for it in items:
@@ -214,11 +224,10 @@ def _cmd_scan(args) -> int:
 
 def _cmd_index(args) -> int:
     import time
-    from pathlib import Path
 
     from .library import Library
 
-    library = Library(Path(args.root), handwriting=args.handwriting, engine=args.engine)
+    library = Library(_folder(args.root), handwriting=args.handwriting, engine=args.engine)
     if args.handwriting and not library.handwriting:
         print("handwriting recognition is not available: install the [handwriting] extra (TrOCR) or the winrt inking package")
     elif args.handwriting:
@@ -384,7 +393,15 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING)
-    return COMMANDS.get(args.command, _cmd_gui)(args)  # no command: the GUI
+    try:
+        return COMMANDS.get(args.command, _cmd_gui)(args)  # no command: the GUI
+    except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        # These three read local files only, so a failure is the user's path or
+        # file, not a bug to trace; --verbose keeps the traceback.
+        if args.command not in ("scan", "index", "compile") or args.verbose:
+            raise
+        print(f"{args.command} failed: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

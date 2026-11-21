@@ -208,8 +208,9 @@ def page_rm_bytes(paragraphs, author_uuid, paper: tuple[float, float] | None = N
     return buf.getvalue()
 
 
-def _page_order_key(index: int) -> str:
+def page_order_key(index: int) -> str:
     """The tablet orders pages by a lexicographic key ("baa", "bab", ...).
+    The compiler and the editor both number pages with this one.
 
     The first 676 pages get "b" and two letters. Two letters cannot count
     further, so the pages after them get "c" and three, then "d" and four: a
@@ -241,7 +242,7 @@ def build_rmdoc(title: str, page_texts: list, paper: tuple[float, float] | None 
             "pages": [
                 {
                     "id": pid,
-                    "idx": {"timestamp": "1:2", "value": _page_order_key(i)},
+                    "idx": {"timestamp": "1:2", "value": page_order_key(i)},
                     "template": {"timestamp": "1:1", "value": "Blank"},
                 }
                 for i, pid in enumerate(page_ids)

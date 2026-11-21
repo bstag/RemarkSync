@@ -39,7 +39,7 @@ from rmscene.text import TextDocument
 
 from . import rmformat
 from .backup import DocItem, active_cpages
-from .mdcompile import STYLE_CODE_BY_NAME, page_rm_bytes, paragraph_styles
+from .mdcompile import STYLE_CODE_BY_NAME, page_order_key, page_rm_bytes, paragraph_styles
 from .rmdata import HEADER_SIZE, V5_HEADER, _paragraphs
 
 rmformat.install()
@@ -253,11 +253,6 @@ def _stamps(value):
             yield from _stamps(inner)
 
 
-def _order_key(index: int) -> str:
-    """Page order keys only have to sort; three letters is room for 17,576 pages."""
-    return "b" + "".join(chr(97 + (index // 26 ** p) % 26) for p in (2, 1, 0))
-
-
 class Draft:
     """A notebook loaded for editing. ``files`` maps archive member names to bytes."""
 
@@ -406,7 +401,7 @@ class Draft:
                     template = (by_id.get(page.source) or {}).get("template", {}).get("value", "Blank")
                     entry = {"id": page.page_id, "template": stamp(template)}
                     pages.append(entry)
-                entry["idx"] = stamp(_order_key(index))
+                entry["idx"] = stamp(page_order_key(index))  # every page is renumbered, so the keys agree
             opened = cpages.get("lastOpened") or {}
             if opened.get("value") not in order:
                 cpages["lastOpened"] = stamp(order[0])

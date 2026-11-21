@@ -158,14 +158,14 @@ def test_build_rmdoc_follows_the_software_3_layout():
         assert meta["visibleName"] == "My Doc" and meta["type"] == "DocumentType"
 
 
-def test_page_order_keys_sort_however_many_pages_there_are():
-    from remarksync.mdcompile import _page_order_key
+def testpage_order_keys_sort_however_many_pages_there_are():
+    from remarksync.mdcompile import page_order_key
 
     # the keys a tablet has already accepted stay exactly as they were
-    assert [_page_order_key(i) for i in (0, 1, 25, 26, 675)] == ["baa", "bab", "baz", "bba", "bzz"]
-    assert all(_page_order_key(i) == f"b{chr(97 + i // 26)}{chr(97 + i % 26)}" for i in range(676))
+    assert [page_order_key(i) for i in (0, 1, 25, 26, 675)] == ["baa", "bab", "baz", "bba", "bzz"]
+    assert all(page_order_key(i) == f"b{chr(97 + i // 26)}{chr(97 + i % 26)}" for i in range(676))
     # past 676 the two letters used to run on into "b{a" and then out of ASCII
-    keys = [_page_order_key(i) for i in range(676 + 26 ** 3 + 50)]
+    keys = [page_order_key(i) for i in range(676 + 26 ** 3 + 50)]
     assert keys == sorted(keys) and len(set(keys)) == len(keys)
     assert all(key.isascii() and key.isalpha() and key.islower() for key in keys)
     assert keys[676] == "caaa" and keys[676 + 26 ** 3] == "daaaa"

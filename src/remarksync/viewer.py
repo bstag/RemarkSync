@@ -237,10 +237,14 @@ class PageCanvas(QWidget):
     # -- painting ---------------------------------------------------------
 
     def paintEvent(self, event) -> None:  # noqa: N802
-        key = (id(self), self._scale)
+        # Painted at the display's own pixels: on a 150% screen a pixmap of the
+        # widget's logical size would be drawn once and then stretched soft.
+        ratio = self.devicePixelRatioF()
+        key = (id(self), self._scale, ratio)
         pix = _painted_pages.get(key)
         if pix is None:
-            pix = QPixmap(self.size())
+            pix = QPixmap(self.size() * ratio)
+            pix.setDevicePixelRatio(ratio)
             pix.fill(Qt.white)
             painter = QPainter(pix)
             self._paint_frame(painter)
