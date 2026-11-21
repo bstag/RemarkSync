@@ -265,3 +265,59 @@ def test_network_listing_failure_records_error_keeps_last_success(data, tmp_path
     state = json.loads((tmp_path / cloudsync.STATE).read_text())
     assert state["status"] == "error" and state["last_success"] == success["last_success"]
     assert (tmp_path / "raw" / (IDENTIFIER + ".pdf")).is_file()
+
+
+def test_state_with_unescaped_names_is_read_as_utf8(data, tmp_path):
+    """A restored store's state holds names as written, not ASCII-escaped; it
+    must not be read in the platform's encoding (cp1252 on Windows)."""
+    import json
+    client = Source(*data)
+    cloudsync.sync(client, tmp_path)
+    path = tmp_path / cloudsync.STATE
+    name = "\u0141\u00f3d\u017a caf\u00e9 notes"
+    state = json.loads(path.read_bytes())
+    state["documents"][IDENTIFIER]["name"] = name
+    path.write_bytes(json.dumps(state, ensure_ascii=False).encode("utf-8"))
+    result = cloudsync.sync(client, tmp_path)
+    assert result["status"] == "ok" and result["unchanged"] == [IDENTIFIER]
+    assert json.loads(path.read_bytes())["documents"][IDENTIFIER]["name"] == name
+    assert name in (tmp_path / "preservation.html").read_text(encoding="utf-8")
+
+
+def test_a_store_in_use_is_reported_as_busy_not_as_a_failed_pull(data, tmp_path):
+    from remarksync.backupstore import writer_lock
+    client = Source(*data)
+    cloudsync.sync(client, tmp_path)
+    with writer_lock(tmp_path):
+        with pytest.raises(CloudError, match="Another RemarkSync sync"):
+            cloudsync.sync(client, tmp_path)
+    assert cloudsync.sync(client, tmp_path)["status"] == "ok"
+
+
+def test_cli_gives_the_dialog_no_destination_unless_asked(monkeypatch, tmp_path):
+    """Without --dest the dialog keeps the folder it remembers; a default
+    passed down would be taken for an override."""
+    import sys
+    import types
+    from remarksync.__main__ import main
+    calls = []
+    fake = types.ModuleType("remarksync.cloudsync_dialog")
+    fake.run = lambda destination=None, **options: calls.append((destination, options))
+    monkeypatch.setitem(sys.modules, "remarksync.cloudsync_dialog", fake)
+    assert main(["cloud"]) == 0 and main(["server-sync"]) == 0
+    assert main(["cloud", "gui", "--dest", str(tmp_path)]) == 0
+    assert [destination for destination, _options in calls] == [None, None, tmp_path]
+    assert calls[0][1]["source"] == "cloud" and calls[1][1]["source"] == "server"
+
+
+def test_cli_sync_defaults_to_one_store_wherever_it_is_run(monkeypatch, tmp_path):
+    from remarksync import cloud
+    from remarksync.__main__ import main
+    seen = []
+    monkeypatch.setattr(cloud, "CloudClient", lambda: object())
+    monkeypatch.setattr(cloudsync, "sync", lambda client, destination, **_options: seen.append(destination) or {"status": "ok"})
+    monkeypatch.chdir(tmp_path)
+    assert main(["cloud", "sync"]) == 0
+    assert seen == [cloudsync.DEFAULT_DESTINATION] and cloudsync.DEFAULT_DESTINATION.is_absolute()
+    assert main(["cloud", "sync", "--dest", "elsewhere"]) == 0
+    assert seen[1] == Path("elsewhere")

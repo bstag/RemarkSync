@@ -287,3 +287,56 @@ def test_glyphs_start_four_pixels_inside_the_block():
 
     assert TEXT_LEFT_PAD == 4.0
     assert TEXT_LEFT_PAD * 2 == TEXT_WRAP_INSET
+
+
+def test_a_line_broken_inside_a_word_consumes_no_separator():
+    """``TextLine.chars`` says how far into the paragraph a line reaches, and
+    anchored ink is placed by it. A break between words swallows a space; a
+    break inside a word swallows nothing. Charging one for every break left
+    each line after a mid-word break a character late."""
+    word = "g" * 300  # one unbroken word, several lines long
+    lines = lay_out_lines([("PLAIN", word)])
+    assert len(lines) > 2
+    assert "".join(ln.text for ln in lines) == word
+    reached = 0
+    for ln in lines:
+        reached += len(ln.text)
+        assert ln.chars == reached
+    assert lines[-1].chars == len(word)
+
+    # words still pay for the space the line broke on
+    text = ("word " * 100).strip()
+    lines = lay_out_lines([("PLAIN", text)])
+    assert len(lines) > 1 and lines[-1].chars == len(text)
+    for ln in lines:
+        assert text[ln.chars - len(ln.text):ln.chars] == ln.text
+
+    # and both kinds of break in one paragraph
+    mixed = "short words then " + "g" * 200 + " and more words after it"
+    lines = lay_out_lines([("PLAIN", mixed)])
+    assert lines[-1].chars == len(mixed)
+    for ln in lines:
+        assert mixed[ln.chars - len(ln.text):ln.chars] == ln.text
+
+
+def test_lines_can_be_broken_by_another_wrap_with_the_same_rhythm():
+    def halves(text, style, width):
+        return [text[: len(text) // 2], text[len(text) // 2:]]
+
+    ours = lay_out_lines([("PLAIN", "abcdef"), ("HEADING", "uvwxyz")], wrap_fn=halves)
+    assert [ln.text for ln in ours] == ["abc", "def", "uvw", "xyz"]
+    assert [ln.chars for ln in ours] == [3, 6, 3, 6]
+    assert [ln.first for ln in ours] == [True, False, True, False]
+    assert ours[0].baseline == FIRST_BASELINE
+
+
+def test_list_markers_count_up_and_start_again():
+    from remarksync.textmetrics import marker_label, numbered
+
+    lines = lay_out_lines([("NUMBERED", "a"), ("NUMBERED", "b " * 80), ("NUMBERED2", "x"), ("NUMBERED2", "y"),
+                           ("NUMBERED", "again"), ("BULLET", "dot"), ("CHECKBOX", "box"), ("PLAIN", "text")])
+    labels = [marker_label(st.marker, number) for ln, st, number in numbered(lines) if ln.first]
+    assert labels == ["1.", "2.", "a.", "b.", "1.", "\u2022", None, None]
+    # a wrapped paragraph keeps its number on every line of it
+    assert [number for ln, st, number in numbered(lines) if ln.paragraph == 1] == [2, 2]
+    assert marker_label("letter", 27) == "a." and marker_label("bullet2") == "\u25e6"

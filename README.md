@@ -472,7 +472,10 @@ src/remarksync/
   cloudsync.py   whole-library cloud polling, immutable archives and preservation renderings
   serversync.py  verified central-server downloads; no account pairing or local PDF export
   server.py      read-only private index/status/manifest and current artifact routes
+  store.py       what the sync stores share: limits, record fields, hash-checked copying,
+                 link refusal, the state file and the start and end of a sync run
   cloudsync_dialog.py / cloud_worker.py  selected-source GUI polling and child-process work
+  workerprocess.py  the one launcher for worker child processes and their JSON-lines replies
   pdfexport.py / pdfexport_worker.py  original-PDF preservation and process isolation
   inkgeometry.py / notelayout.py  shared ink outlines and optional typed-note column layout
   recognize.py   handwriting as searchable text: the tablet's own conversions, the

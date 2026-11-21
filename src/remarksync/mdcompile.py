@@ -30,16 +30,14 @@ from rmscene import CrdtId, LwwValue, PageInfoBlock, RootTextBlock, SceneInfo, s
 from rmscene import scene_items as si
 
 from . import rmformat
-from .rmdata import PAGE_HEIGHT, PAGE_WIDTH
-from .textmetrics import STYLE_CODES
+from .rmdata import DEFAULT_PAPER
+# Text-box placement and page fill come from the shared text metrics, so the
+# compiler, the page decoder and the painter agree on where text sits.
+from .textmetrics import STYLE_CODES, TEXT_POS_X, TEXT_POS_Y, TEXT_WIDTH, block_height, page_block_room
 
 rmformat.install()  # write the paragraph-format fields the tablet expects for subheadings
 
 STYLE_CODE_BY_NAME = {name: code for code, name in STYLE_CODES.items()}
-
-# Text-box placement and page fill come from the shared text metrics, so the
-# compiler, the page decoder and the painter agree on where text sits.
-from .textmetrics import TEXT_POS_X, TEXT_POS_Y, TEXT_WIDTH, block_height, page_block_room
 
 _LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
 _IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
@@ -74,24 +72,22 @@ def markdown_to_paragraphs(md: str) -> list[tuple[str, str]]:
     in_code = False
     joinable = False  # the previous paragraph is prose that may continue
     for raw in md.splitlines():
+        # only prose carries on from the line before, and only into more prose
+        continues, joinable = joinable, False
         if raw.strip().startswith("```"):
             in_code = not in_code
             paras.append(("PLAIN", "    -----"))
-            joinable = False
             continue
         if in_code:
             paras.append(("PLAIN", "    " + raw))
-            joinable = False
             continue
         if not raw.strip():
             paras.append(("PLAIN", ""))
-            joinable = False
             continue
         m = _HEADING_RE.match(raw)
         if m:
             level = len(m.group(1))
             paras.append(("HEADING" if level == 1 else "SUBHEADING" if level == 2 else "BOLD", _inline(m.group(2)).strip()))
-            joinable = False
             continue
         m = _CHECKBOX_RE.match(raw)
         if m:
@@ -99,41 +95,25 @@ def markdown_to_paragraphs(md: str) -> list[tuple[str, str]]:
             checked = m.group(2).lower() == "x"
             style = "CHECKBOX2" if nested else ("CHECKBOX_CHECKED" if checked else "CHECKBOX")
             paras.append((style, _inline(m.group(3)).strip()))
-            joinable = False
             continue
         m = _BULLET_RE.match(raw)
         if m:
             paras.append(("BULLET2" if len(m.group(1)) >= 2 else "BULLET", _inline(m.group(2)).strip()))
-            joinable = False
             continue
         m = _NUMBERED_RE.match(raw)
         if m:
             paras.append(("NUMBERED2" if len(m.group(1)) >= 2 else "NUMBERED", _inline(m.group(2)).strip()))
-            joinable = False
             continue
         if raw.startswith(("    ", "\t", ">", "|")):
             paras.append(("PLAIN", _inline(raw)))
-            joinable = False
             continue
         line = _inline(raw).strip()
-        if joinable and paras and not paras[-1][1].endswith("  "):
+        if continues and paras and not paras[-1][1].endswith("  "):
             paras[-1] = (paras[-1][0], paras[-1][1].rstrip() + " " + line)
         else:
             paras.append(("PLAIN", line))
         joinable = True
     return paras
-
-
-_MARKERS = {
-    "HEADING": "# ", "BOLD": "## ", "BULLET": "- ", "BULLET2": "  - ", "NUMBERED": "1. ", "NUMBERED2": "   a. ",
-    "CHECKBOX": "- [ ] ", "CHECKBOX_CHECKED": "- [x] ", "CHECKBOX2": "  - [ ] ",
-}
-
-
-def markdown_to_text(md: str) -> str:
-    """Flatten markdown to plain text with the block markers rmc-style
-    extraction would re-produce, so content round-trips as text."""
-    return "\n".join(_MARKERS.get(style, "") + text if text else "" for style, text in markdown_to_paragraphs(md))
 
 
 def paginate(paragraphs: list[tuple[str, str]],
@@ -154,7 +134,7 @@ def paginate(paragraphs: list[tuple[str, str]],
     paragraphs for it to show, and the tablet grew the canvas to 2257 to hold
     what we had overfilled it with.
     """
-    room = page_block_room((paper or (PAGE_WIDTH, PAGE_HEIGHT))[1])
+    room = page_block_room((paper or DEFAULT_PAPER)[1])
     pages: list[list[tuple[str, str]]] = []
     current: list[tuple[str, str]] = []
     for paragraph in paragraphs:
@@ -169,10 +149,27 @@ def paginate(paragraphs: list[tuple[str, str]],
     return pages or [[("PLAIN", "")]]
 
 
-def paginate_text(text: str, paper: tuple[float, float] | None = None) -> list[str]:
-    """Plain-text pagination (every line a PLAIN paragraph)."""
-    pages = paginate([("PLAIN", line) for line in text.splitlines()] or [("PLAIN", "")], paper)
-    return ["\n".join(t for _, t in page) for page in pages]
+def paragraph_styles(paragraphs: list[tuple[str, str]], first_char: int) -> dict:
+    """The style entries of a text block whose characters are one run of
+    consecutive ids starting at ``CrdtId(1, first_char)``.
+
+    Keyed the way the tablet keys them: the root id for the first paragraph,
+    the id of the newline ending the previous paragraph for the rest. Plain
+    paragraphs after the first need no entry. Each entry is stamped with an id
+    of its own, after the last character's.
+    """
+    styles = {}
+    stamp = first_char + sum(len(t) + 1 for _, t in paragraphs)  # one past the text and its end
+    offset = 0
+    for k, (style, t) in enumerate(paragraphs):
+        code = STYLE_CODE_BY_NAME.get(style, 1)
+        if code != 1 or k == 0:
+            key = CrdtId(0, 0) if k == 0 else CrdtId(1, first_char + offset - 1)
+            # unknown codes survive via rmdata's _missing_ shim
+            styles[key] = LwwValue(timestamp=CrdtId(1, stamp), value=si.ParagraphStyle(code))
+            stamp += 1
+        offset += len(t) + 1
+    return styles
 
 
 def page_rm_bytes(paragraphs, author_uuid, paper: tuple[float, float] | None = None) -> bytes:
@@ -194,17 +191,7 @@ def page_rm_bytes(paragraphs, author_uuid, paper: tuple[float, float] | None = N
             block.value.pos_x = TEXT_POS_X
             block.value.pos_y = TEXT_POS_Y
             block.value.width = TEXT_WIDTH
-            styles = {}
-            stamp = first_char + len(text) + 1
-            offset = 0
-            for k, (style, t) in enumerate(paragraphs):
-                key = CrdtId(0, 0) if k == 0 else CrdtId(1, first_char + offset - 1)
-                code = STYLE_CODE_BY_NAME.get(style, 1)
-                if code != 1 or k == 0:
-                    styles[key] = LwwValue(timestamp=CrdtId(1, stamp), value=si.ParagraphStyle(code))  # unknown codes survive via the _missing_ shim
-                    stamp += 1
-                offset += len(t) + 1
-            block.value.styles = styles
+            block.value.styles = paragraph_styles(paragraphs, first_char)
         out.append(block)
         if isinstance(block, PageInfoBlock):
             out.append(
@@ -213,7 +200,7 @@ def page_rm_bytes(paragraphs, author_uuid, paper: tuple[float, float] | None = N
                     background_visible=LwwValue(timestamp=CrdtId(0, 15), value=True),
                     root_document_visible=LwwValue(timestamp=CrdtId(0, 16), value=True),
                     # whole pixels: the block writes the pair as uint32
-                    paper_size=tuple(int(n) for n in (paper or (PAGE_WIDTH, PAGE_HEIGHT))),
+                    paper_size=tuple(int(n) for n in (paper or DEFAULT_PAPER)),
                 )
             )
     buf = io.BytesIO()
@@ -222,15 +209,26 @@ def page_rm_bytes(paragraphs, author_uuid, paper: tuple[float, float] | None = N
 
 
 def _page_order_key(index: int) -> str:
-    """The tablet orders pages by a lexicographic key ("ba", "bb", ...)."""
-    return f"b{chr(97 + index // 26)}{chr(97 + index % 26)}"
+    """The tablet orders pages by a lexicographic key ("baa", "bab", ...).
+
+    The first 676 pages get "b" and two letters. Two letters cannot count
+    further, so the pages after them get "c" and three, then "d" and four: a
+    longer key under a later first letter, which still sorts after every key
+    before it. (The two-letter form used to run on past "bzz" into punctuation
+    and then out of ASCII.)
+    """
+    letters, lead = 2, ord("b")
+    while index >= 26 ** letters:
+        index -= 26 ** letters
+        letters, lead = letters + 1, lead + 1
+    return chr(lead) + "".join(chr(97 + (index // 26 ** p) % 26) for p in reversed(range(letters)))
 
 
 def build_rmdoc(title: str, page_texts: list, paper: tuple[float, float] | None = None) -> bytes:
     """Assemble the .rmdoc zip the way software 3.x lays a document out:
     ``<uuid>.content`` (formatVersion 2, pages under cPages with UUID ids),
     ``<uuid>.metadata``, and one ``<uuid>/<page-uuid>.rm`` per page."""
-    width, height = paper or (PAGE_WIDTH, PAGE_HEIGHT)
+    width, height = paper or DEFAULT_PAPER
     doc_uuid = str(uuidlib.uuid4())
     author_uuid = uuidlib.UUID(int=1)  # stable author id across pages
     page_ids = [str(uuidlib.uuid4()) for _ in page_texts]

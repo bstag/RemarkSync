@@ -15,7 +15,6 @@ Fetching is read-only: a GET per document, saved outside the repo.
 from __future__ import annotations
 
 import json
-import os
 import statistics
 import sys
 import urllib.request
@@ -28,12 +27,11 @@ from PIL import Image
 from remarksync.backup import iter_docs, scan_backup
 from remarksync.rmdata import PAGE_HEIGHT, PAGE_WIDTH
 
+from .paths import HOST, RAW, work_dir
 from .oracle import INK_LEVEL, Pairing, contact_sheet, render_paper
 
-RAW = Path(os.environ.get("REMARKSYNC_REAL_BACKUP", r"C:\Backups\reMarkable\raw"))
-CACHE = Path(os.environ.get("REMARKSYNC_DEVICE_PDF", str(Path(os.environ["TEMP"]) / "rs-device-pdf")))
+CACHE = work_dir("REMARKSYNC_DEVICE_PDF", "rs-device-pdf")
 DEMO = Path(__file__).resolve().parents[2] / "demo"
-HOST = os.environ.get("REMARKSYNC_TABLET", "10.11.99.1")
 
 # The pages whose ink mass disagrees with the desktop app's render.
 SUSPECTS = ["Kemplay Dissertation Notebook", "Quick sheets", "Master to-do list", "2026", "Start 9/26"]

@@ -77,26 +77,72 @@ def _wait_for_pages(qapp, win, seconds=20):
 
 def test_cloud_dialog_masked_input_and_worker_failure(qapp, tmp_path, monkeypatch):
     import time
+    from PySide6.QtCore import QSettings
     from PySide6.QtWidgets import QLineEdit
-    from remarksync import cloud_dialog
+    from remarksync import cloudsync_dialog
 
     class Unpaired:
         paired = False
-    monkeypatch.setattr(cloud_dialog, "CloudClient", Unpaired)
-    dialog = cloud_dialog.CloudTrialDialog(destination=tmp_path)
+    monkeypatch.setattr(cloudsync_dialog, "CloudClient", Unpaired)
+    settings = QSettings(str(tmp_path / "cloud.ini"), QSettings.IniFormat)
+    dialog = cloudsync_dialog.CloudSyncDialog(destination=tmp_path / "sync", settings=settings, automatic=False)
     assert dialog.code.echoMode() == QLineEdit.Password
-    assert not dialog.download.isEnabled() and not dialog.open_pdf.isEnabled()
-    dialog.start({"operation": "invalid-read-only-operation"})
+    assert not dialog.open_library.isEnabled() and not dialog.open_exports.isEnabled()
+    dialog.start({"operation": "invalid-read-only-operation"})  # a real worker process, through the shared launcher
     assert dialog.process is not None and not dialog.pair.isEnabled()
     dialog.close()
     assert dialog.process is not None  # closing cannot abandon a running operation
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 20
     while dialog.process is not None and time.monotonic() < deadline:
         qapp.processEvents()
         time.sleep(0.01)
     assert dialog.process is None
     assert dialog.status.text() == "Unsupported cloud operation."
-    assert dialog.pair.isEnabled() and not dialog.open_pdf.isEnabled()
+    assert dialog.pair.isEnabled() and not dialog.open_exports.isEnabled() and dialog.failures == 1
+    dialog.close()
+
+
+def test_worker_that_cannot_start_reports_once_after_the_caller_has_the_process(qapp, monkeypatch):
+    import time
+    from remarksync import workerprocess
+
+    monkeypatch.setattr(workerprocess.sys, "executable", "no-such-python-interpreter")
+    answers = []
+    process = workerprocess.start_json_worker(None, "remarksync.cloud_worker", {"operation": "pair"},
+                                              lambda *answer: answers.append(answer))
+    assert answers == []  # never from inside the call: the caller must be able to store the process first
+    deadline = time.monotonic() + 10
+    while not answers and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    qapp.processEvents()
+    assert answers == [(process, None, 1)]
+
+
+def test_saved_sync_destination_is_kept_unless_a_path_is_given(qapp, tmp_path, monkeypatch):
+    """No destination means "not given" (the CLI without --dest): the saved folder stays."""
+    from PySide6.QtCore import QSettings
+    from remarksync import cloudsync_dialog
+
+    class Paired:
+        paired = True
+    monkeypatch.setattr(cloudsync_dialog, "CloudClient", Paired)
+    settings = QSettings(str(tmp_path / "cloud.ini"), QSettings.IniFormat)
+    saved, given = (tmp_path / "saved").resolve(), (tmp_path / "given").resolve()
+    settings.setValue("destination", str(saved))
+    dialog = cloudsync_dialog.CloudSyncDialog(settings=settings, automatic=False, source="cloud")
+    assert dialog.destination == saved
+    dialog.close()
+    dialog = cloudsync_dialog.CloudSyncDialog(destination=None, settings=settings, automatic=False, source="cloud")
+    assert dialog.destination == saved and settings.value("destination") == str(saved)
+    dialog.close()
+    dialog = cloudsync_dialog.CloudSyncDialog(destination=given, settings=settings, automatic=False, source="cloud")
+    assert dialog.destination == given and settings.value("destination") == str(given)
+    dialog.close()
+    # a path that happens to be the default is still a path that was given
+    dialog = cloudsync_dialog.CloudSyncDialog(destination=cloudsync_dialog.DEFAULT_DESTINATION, settings=settings,
+                                            automatic=False, source="cloud")
+    assert dialog.destination == cloudsync_dialog.DEFAULT_DESTINATION.resolve()
     dialog.close()
 
 
@@ -109,13 +155,15 @@ def test_tablet_note_layout_is_default(qapp, monkeypatch):
 
 
 def test_cloud_pairing_button_opens_browser_connect_route(qapp, tmp_path, monkeypatch):
-    from remarksync import cloud_dialog
+    from PySide6.QtCore import QSettings
+    from remarksync import cloudsync_dialog
     class Unpaired:
         paired = False
     opened = []
-    monkeypatch.setattr(cloud_dialog, "CloudClient", Unpaired)
-    monkeypatch.setattr(cloud_dialog.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()) or True)
-    dialog = cloud_dialog.CloudTrialDialog(destination=tmp_path)
+    monkeypatch.setattr(cloudsync_dialog, "CloudClient", Unpaired)
+    monkeypatch.setattr(cloudsync_dialog.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()) or True)
+    settings = QSettings(str(tmp_path / "cloud.ini"), QSettings.IniFormat)
+    dialog = cloudsync_dialog.CloudSyncDialog(destination=tmp_path / "sync", settings=settings, automatic=False)
     dialog.login.click()
     assert opened == ["https://my.remarkable.com/device/browser/connect"]
     dialog.close()
@@ -151,27 +199,23 @@ def test_cloud_progress_chunks_and_failure_backoff(qapp, tmp_path, monkeypatch):
     import json
     from PySide6.QtCore import QSettings
     from remarksync import cloudsync_dialog
+    from remarksync.workerprocess import Reply
     class Paired:
         paired = True
     monkeypatch.setattr(cloudsync_dialog, "CloudClient", Paired)
     settings = QSettings(str(tmp_path / "cloud.ini"), QSettings.IniFormat)
     dialog = cloudsync_dialog.CloudSyncDialog(destination=tmp_path / "sync", settings=settings, automatic=False)
-    class Process:
-        data = b'{"event":"progress","done":2,"total":5,"na'
-        def readAllStandardOutput(self):
-            data, self.data = self.data, b""
-            return data
-        def deleteLater(self):
-            pass
-    process = Process()
+    process = object()
     dialog.process = process
-    dialog.read_output(process)
-    assert dialog.result is None
-    process.data = b'me":"Notebook"}\n' + json.dumps({"error": "Network unavailable"}).encode() + b"\n"
-    dialog.read_output(process)
-    assert dialog.status.text() == "3/5: Notebook"
+    reply = Reply(dialog.progress_event)
+    reply.feed(b'{"event":"progress","done":2,"total":5,"na')
+    assert reply.result is None and dialog.status.text() != "3/5: Notebook"
+    reply.feed(b'me":"Notebook"}\nnot json\n[1]\n' + json.dumps({"error": "Network unavailable"}).encode())
+    assert dialog.status.text() == "3/5: Notebook" and reply.result is None
+    reply.feed(b"", last=True)  # the result line had no newline; the end of output completes it
+    assert reply.result == {"error": "Network unavailable"}
     dialog.auto.setChecked(True)
-    dialog.finished_operation(process, 1)
+    dialog.finished_operation(process, reply.result, 1)
     assert dialog.status.text() == "Network unavailable"
     assert dialog.process is None and dialog.failures == 1
     assert dialog.timer.isActive() and dialog.timer.interval() == 600_000
@@ -703,3 +747,195 @@ def test_documents_removed_from_the_tablet_are_hidden_until_asked_for(qapp, back
     win.removed_action.setChecked(False)
     assert not any("Removed" in text for text in labels())
     win.close()
+
+
+def test_edit_dialog_cannot_be_dismissed_while_sending_or_lose_edits_unasked(qapp, backup_root, tmp_path, monkeypatch):
+    """Esc reaches a dialog as reject(), with no close event. It must not hide
+    a dialog that is still sending, nor drop edits without asking."""
+    from PySide6.QtWidgets import QMessageBox
+    from remarksync import edit_dialog
+    from remarksync.backup import iter_docs, scan_backup
+    from remarksync.rmedit import Draft
+    from .conftest import JOURNAL_UUID, write_cpages_doc
+
+    write_cpages_doc(backup_root, JOURNAL_UUID, "2026", "", ["11111111-aaaa-4bbb-8ccc-00000000000%d" % i for i in range(2)])
+    doc = next(d for d in iter_docs(scan_backup(backup_root)) if d.uuid == JOURNAL_UUID)
+    asked = []
+    answer = [QMessageBox.No]
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: asked.append(a[1]) or answer[0])
+    dialog = edit_dialog.EditDialog(Draft.from_document(doc), sent_root=tmp_path / "sent")
+    dialog.show()
+
+    dialog.sender_.process = object()  # a send is running
+    dialog.reject()
+    assert dialog.isVisible() and "Wait for the send" in dialog.status.text()
+    assert not dialog.close() and dialog.isVisible() and asked == []
+    dialog.hide()
+    assert not dialog.close()  # nor may a hidden one be closed under a running send
+    dialog.show()
+    dialog.sender_.process = None
+
+    dialog.page_list.setCurrentRow(0)
+    dialog.editor.setPlainText("a new first line")
+    dialog.reject()
+    assert dialog.isVisible() and asked == ["Discard edits"]  # declined: still open, edits intact
+    assert not dialog.close() and dialog.isVisible() and len(asked) == 2
+    assert dialog.draft.pages[0].text == "a new first line"
+
+    dialog._sent({"status": "sent", "name": "2026"})  # sent: nothing is left to lose
+    dialog.reject()
+    assert not dialog.isVisible() and len(asked) == 2
+
+    dialog.show()
+    dialog._duplicate()
+    answer[0] = QMessageBox.Yes
+    dialog.reject()
+    assert not dialog.isVisible() and len(asked) == 3
+
+
+def test_window_does_not_close_under_a_hidden_dialog_that_is_still_sending(qapp, backup_root, monkeypatch):
+    from remarksync.backup import iter_docs, scan_backup
+    from remarksync.gui import MainWindow
+    from .conftest import JOURNAL_UUID
+
+    monkeypatch.setattr(MainWindow, "_restore_state", lambda self: None)
+    win = MainWindow()
+    win.open_folder(backup_root)
+    win.show_doc(next(d for d in iter_docs(scan_backup(backup_root)) if d.uuid == JOURNAL_UUID))
+    _wait_for_pages(qapp, win)
+    win.edit_doc_action()
+    sending = win._edit_dialogs[-1]
+    sending.hide()
+    sending.sender_.process = object()
+    assert not win.close() and "still being sent" in win.statusBar().currentMessage()
+    win.edit_doc_action()  # opening another editor must not forget the one that is sending
+    assert sending in win._edit_dialogs and len(win._edit_dialogs) == 2
+    win._edit_dialogs[-1].hide()
+    assert not win.close()
+    sending.sender_.process = None
+    win.edit_doc_action()
+    assert len(win._edit_dialogs) == 1  # finished and closed dialogs are let go
+    win._edit_dialogs[-1].hide()
+    assert win.close()
+
+
+def test_document_opens_without_its_pdf_when_the_pdf_cannot_be_read(qapp, backup_root, monkeypatch):
+    import remarksync.gui as gui
+    from .conftest import JOURNAL_UUID, PDF_UUID
+
+    monkeypatch.setattr(gui.MainWindow, "_restore_state", lambda self: None)
+    win = gui.MainWindow()
+    try:
+        win.open_folder(backup_root)
+        docs = {d.uuid: d for d in win._library.documents}
+        win.show_doc(docs[JOURNAL_UUID])
+        _wait_for_pages(qapp, win)
+        assert win.edit_action.isEnabled()
+
+        def unreadable(_path):
+            raise ValueError("damaged file")
+        monkeypatch.setattr(gui, "PdfUnderlay", unreadable)
+        win.show_doc(docs[PDF_UUID])
+        _wait_for_pages(qapp, win)
+        # the window describes the document it shows, not the one before it
+        assert win._active_doc is docs[PDF_UUID] and not win.edit_action.isEnabled()
+        assert len(win._canvases) == len(docs[PDF_UUID].pages) and win.pages_pending() == 0
+        assert "could not open base PDF" in win.statusBar().currentMessage()
+        assert "damaged file" in win.statusBar().currentMessage()
+    finally:
+        win.close()
+
+
+def test_long_documents_fill_in_with_one_timer_and_index_threads_are_released(qapp, backup_root, monkeypatch):
+    import time
+    from PySide6.QtCore import QThread, QTimer
+    from remarksync.gui import MainWindow
+    from .conftest import JOURNAL_UUID, write_cpages_doc
+
+    write_cpages_doc(backup_root, JOURNAL_UUID, "2026", "", ["22222222-aaaa-4bbb-8ccc-%012d" % i for i in range(60)])
+    monkeypatch.setattr(MainWindow, "_restore_state", lambda self: None)
+    win = MainWindow()
+    try:
+        win.open_folder(backup_root)
+        timers = len(win.findChildren(QTimer))
+        doc = win._library.document(JOURNAL_UUID)
+        for _ in range(3):
+            win.show_doc(doc)
+            assert len(win._canvases) == 40 and win._fill_timer.isActive()
+        deadline = time.monotonic() + 20
+        while (win._fill_timer.isActive() or win.is_decoding or win.pages_pending()) and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+        assert len(win._canvases) == 60 and not win._fill_timer.isActive()
+        assert len(win.findChildren(QTimer)) == timers
+
+        for _ in range(3):
+            win.update_index()
+            deadline = time.monotonic() + 20
+            while win.is_indexing and time.monotonic() < deadline:
+                qapp.processEvents()
+                time.sleep(0.01)
+            qapp.processEvents()
+        qapp.sendPostedEvents(None, 52)  # QEvent.DeferredDelete
+        assert len([t for t in win.findChildren(QThread) if t is not win._decode_thread]) == 1
+    finally:
+        win.close()
+
+
+def test_keyboard_activation_opens_documents_and_hits_without_reloading_on_double_click(qapp, backup_root, monkeypatch):
+    from remarksync.gui import MainWindow
+    from remarksync.search import SearchHit
+    from .conftest import JOURNAL_UUID
+
+    monkeypatch.setattr(MainWindow, "_restore_state", lambda self: None)
+    win = MainWindow()
+    try:
+        win.open_folder(backup_root)
+        shown = []
+        real = win.show_doc
+        monkeypatch.setattr(win, "show_doc", lambda doc, page_no=None: shown.append((doc.uuid, page_no)) or real(doc, page_no))
+
+        def find(node):
+            item = node.data(0, 0x0100)
+            if getattr(item, "uuid", None) == JOURNAL_UUID and getattr(item, "kind", "") == "doc":
+                return node
+            return next((found for i in range(node.childCount()) if (found := find(node.child(i)))), None)
+
+        node = find(win.doc_tree.invisibleRootItem())
+        win.doc_tree.itemActivated.emit(node, 0)  # Enter on a document that is not open
+        assert shown == [(JOURNAL_UUID, None)]
+        win.doc_tree.itemClicked.emit(node, 0)  # a double-click: click, then activation
+        win.doc_tree.itemActivated.emit(node, 0)
+        assert len(shown) == 2
+
+        win.results_list.addItem("hit")
+        entry = win.results_list.item(0)
+        entry.setData(0x0100, SearchHit(JOURNAL_UUID, "2026", 0, ""))
+        win.results_list.itemActivated.emit(entry)
+        assert shown[-1] == (JOURNAL_UUID, 0) and len(shown) == 3
+        win.results_list.itemClicked.emit(entry)
+        win.results_list.itemActivated.emit(entry)
+        assert len(shown) == 4
+        _wait_for_pages(qapp, win)
+    finally:
+        win.close()
+
+
+def test_sync_action_keeps_one_controller_and_close_message_names_the_sync(qapp, tmp_path, monkeypatch):
+    from remarksync import cloudsync_dialog
+    from remarksync.gui import MainWindow
+
+    class Paired:
+        paired = True
+    monkeypatch.setattr(cloudsync_dialog, "CloudClient", Paired)
+    monkeypatch.setattr(MainWindow, "_restore_state", lambda self: None)
+    win = MainWindow(cloud_autostart=False)
+    assert win._cloud_dialog is None
+    win.library_sync_action(show=False)
+    dialog = win._cloud_dialog
+    win.library_sync_action(show=False)
+    assert win._cloud_dialog is dialog
+    dialog.process = object()
+    assert not win.close() and "library sync" in win.statusBar().currentMessage()
+    dialog.process = None
+    assert win.close()

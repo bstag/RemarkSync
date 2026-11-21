@@ -170,3 +170,9 @@ def test_byte_ranges(header, expected):
 def test_invalid_ranges(header):
     with pytest.raises(ValueError):
         server._range(header, 10)
+
+
+def test_backup_filename_does_not_depend_on_a_fraction_of_a_second():
+    expected = "remarksync-library-20261121T164100Z.zip"
+    assert server._backup_name("2026-11-21T16:41:00+00:00") == expected
+    assert server._backup_name("2026-11-21T16:41:00.250000+00:00") == expected

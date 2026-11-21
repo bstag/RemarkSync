@@ -38,10 +38,8 @@ tablet, which can be deleted afterwards.
 
 from __future__ import annotations
 
-import os
 import string
 import sys
-from pathlib import Path
 from statistics import median
 
 from remarksync.textmetrics import (ADVANCE_SANS, ADVANCE_SERIF, DEFAULT_ADVANCE_SANS,
@@ -49,9 +47,10 @@ from remarksync.textmetrics import (ADVANCE_SANS, ADVANCE_SERIF, DEFAULT_ADVANCE
 
 from .exported import drawn_paragraphs
 from .fixture import compile_runs, style_for
+from .paths import work_dir
 from .tablet import document_id, export_pdf, upload as post_archive
 
-WORK = Path(os.environ.get("REMARKSYNC_ADVANCES", str(Path(os.environ["TEMP"]) / "rs-advances")))
+WORK = work_dir("REMARKSYNC_ADVANCES", "rs-advances")
 TITLE = "RemarkSync advance scale"
 ARCHIVE = WORK / "advances.rmdoc"
 

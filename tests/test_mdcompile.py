@@ -1,15 +1,15 @@
 import zipfile
 
-from remarksync.mdcompile import (build_rmdoc, markdown_to_rmdoc,
-                                  markdown_to_text, paginate_text)
+from remarksync.mdcompile import build_rmdoc, markdown_to_paragraphs, markdown_to_rmdoc, paginate
 from remarksync.layout import lay_out
 from remarksync.rmdata import decode_page, page_text
 
 
 def test_markdown_flattening():
     md = "# Title\n\nsome **bold** and _ital_ and `code`\n\n![img](x.png)\n\nsee [site](https://x.y)\n"
-    text = markdown_to_text(md)
-    assert "Title" in text
+    paragraphs = markdown_to_paragraphs(md)
+    assert paragraphs[0] == ("HEADING", "Title")
+    text = "\n".join(t for _, t in paragraphs)
     assert "**" not in text and "_" not in text and "`" not in text
     assert "[image: img]" in text
     assert "site (https://x.y)" in text
@@ -28,28 +28,44 @@ def test_hard_wrapped_paragraphs_are_joined_for_the_tablet_to_wrap():
         "\n"
         "Second paragraph.\n"
     )
-    text = markdown_to_text(md).splitlines()
-    assert text[0] == "# Title"
-    assert text[2] == "First line of a paragraph continues on the next source line and ends here."
-    assert text[4:6] == ["- item one", "- item two"]
-    assert text[7] == "Second paragraph."
+    paragraphs = markdown_to_paragraphs(md)
+    assert paragraphs[0] == ("HEADING", "Title")
+    assert paragraphs[2] == ("PLAIN", "First line of a paragraph continues on the next source line and ends here.")
+    assert paragraphs[4:6] == [("BULLET", "item one"), ("BULLET", "item two")]
+    assert paragraphs[7] == ("PLAIN", "Second paragraph.")
+
+
+def test_each_heading_level_keeps_its_own_style():
+    """``##`` is the toolbar's Subheading and ``###`` the medium-weight Bold. A
+    text flattening that predated Subheading wrote ``###`` back as ``##`` and
+    ``##`` back as nothing; the paragraphs are the one record of it now."""
+    assert markdown_to_paragraphs("# a\n\n## b\n\n### c\n\n#### d\n") == [
+        ("HEADING", "a"), ("PLAIN", ""), ("SUBHEADING", "b"), ("PLAIN", ""), ("BOLD", "c"), ("PLAIN", ""), ("BOLD", "d"),
+    ]
+
+
+def test_only_prose_is_joined_to_the_line_before():
+    md = "- item\nprose after a list\nmore prose\n    indented\nafter code\n"
+    assert markdown_to_paragraphs(md) == [
+        ("BULLET", "item"), ("PLAIN", "prose after a list more prose"), ("PLAIN", "    indented"), ("PLAIN", "after code"),
+    ]
 
 
 def test_pagination_fills_one_screen_per_page_without_wrapping():
     from remarksync.textmetrics import lines_per_page
 
-    text = "\n".join(f"line {i}" for i in range(200))
-    pages = paginate_text(text)
+    pages = paginate([("PLAIN", f"line {i}") for i in range(200)])
     assert lines_per_page() == 23  # 61 + 22*69.3 + a descender ends at 1827 of 1872
     assert len(pages) == 9  # 200 short paragraphs, 23 per page
-    assert all(p.count("\n") < 23 for p in pages)
+    assert all(len(page) <= 23 for page in pages)
 
     # a long paragraph is never broken, and costs the lines it wraps onto: four
     # of these fill a page where 23 short ones do
     long = ("word " * 100).strip()  # ~500 chars -> 6 tablet lines
-    pages = paginate_text("\n".join([long] * 5))
-    assert [p.count("\n") + 1 for p in pages] == [4, 1]
-    assert all(paragraph == long for page in pages for paragraph in page.split("\n"))
+    pages = paginate([("PLAIN", long)] * 5)
+    assert [len(page) for page in pages] == [4, 1]
+    assert all(paragraph == ("PLAIN", long) for page in pages for paragraph in page)
+    assert paginate([]) == [[("PLAIN", "")]]  # nothing to say is still one page
 
 
 def test_no_page_is_filled_past_the_paper():
@@ -61,7 +77,6 @@ def test_no_page_is_filled_past_the_paper():
     error could show; a Paper Pro's 2160 holds enough paragraphs that it did,
     and the tablet grew the canvas to 2257 to fit what we had overfilled.
     """
-    from remarksync.mdcompile import paginate
     from remarksync.rmdata import PAPER_SIZES
     from remarksync.textmetrics import block_height, page_block_room
 
@@ -83,8 +98,6 @@ def test_no_page_is_filled_past_the_paper():
 
 def test_compiled_styles_round_trip_through_the_decoder():
     import io
-
-    from remarksync.mdcompile import markdown_to_paragraphs
 
     md = (
         "# Big heading\n"
@@ -143,6 +156,19 @@ def test_build_rmdoc_follows_the_software_3_layout():
         assert keys == sorted(keys)  # page order is a lexicographic key
         assert set(names) == {content_name, f"{doc_uuid}.metadata", *(f"{doc_uuid}/{pid}.rm" for pid in page_ids)}
         assert meta["visibleName"] == "My Doc" and meta["type"] == "DocumentType"
+
+
+def test_page_order_keys_sort_however_many_pages_there_are():
+    from remarksync.mdcompile import _page_order_key
+
+    # the keys a tablet has already accepted stay exactly as they were
+    assert [_page_order_key(i) for i in (0, 1, 25, 26, 675)] == ["baa", "bab", "baz", "bba", "bzz"]
+    assert all(_page_order_key(i) == f"b{chr(97 + i // 26)}{chr(97 + i % 26)}" for i in range(676))
+    # past 676 the two letters used to run on into "b{a" and then out of ASCII
+    keys = [_page_order_key(i) for i in range(676 + 26 ** 3 + 50)]
+    assert keys == sorted(keys) and len(set(keys)) == len(keys)
+    assert all(key.isascii() and key.isalpha() and key.islower() for key in keys)
+    assert keys[676] == "caaa" and keys[676 + 26 ** 3] == "daaaa"
 
 
 def test_compiled_page_carries_scene_info():

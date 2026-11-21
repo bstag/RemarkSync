@@ -20,6 +20,14 @@ from pathlib import Path
 HISTORY_DIR = ".remarksync-history"
 TRANSACTION_DIR = ".remarksync-transactions"
 LOCK_NAME = ".remarksync-pull.lock"
+# One document, however it arrives (zip, tar, cloud manifest): the most it may
+# hold. Every extraction and acquisition path checks the same two numbers.
+MAX_ARCHIVE_BYTES = 8 * 1024**3
+MAX_ARCHIVE_ENTRIES = 200_000
+
+
+class StoreBusy(RuntimeError):
+    """Another process holds this folder's writer lock."""
 
 
 def validate_id(uuid: str) -> None:
@@ -37,24 +45,29 @@ def writer_lock(dest: Path):
         handle.seek(0)
         if os.name == "nt":
             import msvcrt
-            try:
+
+            def lock():
                 msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            except OSError as exc:
-                raise RuntimeError("another pull is already updating this backup") from exc
+
+            def unlock():
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
         else:
             import fcntl
-            try:
+
+            def lock():
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError as exc:
-                raise RuntimeError("another pull is already updating this backup") from exc
+
+            def unlock():
+                fcntl.flock(handle, fcntl.LOCK_UN)
+        try:
+            lock()
+        except OSError as exc:
+            raise StoreBusy("another pull is already updating this backup") from exc
         try:
             yield
         finally:
             handle.seek(0)
-            if os.name == "nt":
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                fcntl.flock(handle, fcntl.LOCK_UN)
+            unlock()
 
 
 def _inside(root: Path, path: Path) -> Path:
@@ -64,7 +77,8 @@ def _inside(root: Path, path: Path) -> Path:
     return target
 
 
-def _copy(src: Path, dest: Path) -> None:
+def copy_entry(src: Path, dest: Path) -> None:
+    """Copy one document entry (a file or a directory tree), refusing links."""
     if src.is_symlink() or (src.is_dir() and any(p.is_symlink() for p in src.rglob("*"))):
         raise ValueError(f"links are not document files: {src}")
     if src.is_dir():
@@ -90,6 +104,17 @@ def write_json(path: Path, value: dict) -> None:
     os.replace(temp, path)
 
 
+def read_json(path: Path):
+    """Read JSON as bytes, so the encoding is the file's own (UTF-8) and never
+    the platform's: a restored store holds names that are not ASCII-escaped."""
+    return json.loads(path.read_bytes())
+
+
+def has_unfinished(dest: Path) -> bool:
+    """Whether a publication into ``dest`` was interrupted and awaits recovery."""
+    return any((dest / TRANSACTION_DIR).glob("*.json"))
+
+
 def recover(dest: Path) -> None:
     """Finish committed journals; roll back every interrupted publication.
 
@@ -101,7 +126,7 @@ def recover(dest: Path) -> None:
         return
     _inside(dest, journals)
     for journal in sorted(journals.glob("*.json")):
-        state = json.loads(journal.read_text(encoding="utf-8"))
+        state = read_json(journal)
         uuid = state["uuid"]
         validate_id(uuid)
         names = state["old"] + state["incoming"]
@@ -118,7 +143,7 @@ def recover(dest: Path) -> None:
                     raise ValueError(f"missing recovery file: {src}")
                 if (dest / name).exists():
                     _delete(dest, dest / name)
-                _copy(src, dest / name)
+                copy_entry(src, dest / name)
             for name in set(state["incoming"]) - set(state["old"]):
                 _delete(dest, dest / name)
         journal.unlink()
@@ -135,7 +160,7 @@ def publish(dest: Path, staging: Path, uuid: str, entries, move, *, prune: bool 
     _inside(dest, history)
     history.mkdir(parents=True)
     for path in old:
-        _copy(path, history / path.name)
+        copy_entry(path, history / path.name)
     write_json(history / ".revision.json", {"uuid": uuid, "acquired_at": revision.split("-")[0],
                                             "reason": "pruned" if prune else "replaced",
                                             "entries": [p.name for p in old]})

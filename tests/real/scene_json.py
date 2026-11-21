@@ -1,75 +1,32 @@
 """Compare our decode against the tablet's own JSON dump of the same page.
 
-!! Do not enable this on a device you care about. Tried on software 3.27
-(Paper Pro) on 2026-09-18, SCENE_FILE_V6_DEBUG=1 does not write a harmless
-side dump. It changes what goes into the page file itself: the .rm becomes the
-43-byte magic, then ~314 KB of JSON, then the binary block stream. Nothing
-third-party can read that -- rmscene fails on the first block header, since it
-lands in the middle of the JSON -- and neither can the tablet: its own PDF
-export of such a page came back a blank 1403x1873 sheet, with none of the 842
-ink points on it and not even the 1620x2160 paper the page declares.
+A historical forensic reader. On 2026-09-18 xochitl was run once with
+``SCENE_FILE_V6_DEBUG=1`` (software 3.27, Paper Pro) to see what the device
+thinks a page contains. It does not write a harmless side dump: the JSON goes
+into the page file itself, which then nothing can read, the tablet's own PDF
+export included. What that one capture told us, and why the flag must not be
+set again on notes anyone cares about, is recorded in
+docs/research/rmdoc-viewer-windows.md and tests/real/README.md.
 
-The .rm.tmp.json the log mentions is deleted when the save completes, so the
-JSON has to be read out of the .rm, which is what the notes below describe.
-A page left in this state should be re-saved with the flag off.
+Nothing here touches the tablet, and there are no instructions for producing
+new dumps. This only reads captures that already exist, named
+``<document-uuid>__<page-uuid>.json`` in ``REMARKSYNC_SCENE_JSON``, beside the
+same page in the raw backup.
 
-What it did tell us, from one page, is recorded in
-docs/research/rmdoc-viewer-windows.md.
-
-
-Every oracle so far compares *renderings*: the desktop app's thumbnails settle
-where ink sits, the exported PDF settles how big the canvas is. Neither can say
-what the device thinks a page *contains*, which is why three explanations for
-the canvas shortfall on typed pages have died in a row.
-
-xochitl can be asked. With ``SCENE_FILE_V6_DEBUG=1`` set it writes a JSON dump
-beside each ``.rm`` as it saves it (rmscene issue #25). That is the device's own
-interpretation of its own bytes, field by field.
-
-The dump is prospective: only pages saved *after* the variable is set produce
-one. So this works against a page created for the purpose rather than against
-existing notes, which is better anyway -- a fixture we control and can redraw.
-
-Current use (2026-10-03): live enablement instructions are retired. The earlier
-experiment description below is historical evidence; `steps` now refuses to
-provide firmware-modification commands. Offline `compare` remains available.
-
-Usage:
-
-    python -m tests.real.scene_json steps     # refuses retired live-debug setup
-    python -m tests.real.scene_json compare   # diff the dumps against our decode
-
-Nothing here touches the tablet. ``steps`` prints commands for a person to run,
-because enabling the dump restarts xochitl and the SSH key on this machine has
-a passphrase -- both belong to whoever owns the device, not to a script.
+    python -m tests.real.scene_json            # diff the dumps against our decode
 """
 
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
 from remarksync.rmdata import decode_page
 
-HOST = os.environ.get("REMARKSYNC_TABLET_SSH", "root@10.11.99.1")
-REMOTE_DIR = "/home/root/.local/share/remarkable/xochitl"
-# What the dump is called, observed on software 3.27 (Paper Pro,
-# imx8mm-ferrari): xochitl logs "Scene written to: <page>.rm.tmp.json" beside
-# the .rm.tmp it is about to become. Being a .tmp it may not survive the save,
-# so copy it while it is there.
-DUMP_SUFFIX = ".rm.tmp.json"
-CACHE = Path(os.environ.get("REMARKSYNC_SCENE_JSON", str(Path(os.environ["TEMP"]) / "rs-scene-json")))
+from .paths import RAW, work_dir
 
-
-def steps() -> None:
-    """Retired after firmware debug mode produced unreadable scene files."""
-    raise SystemExit(
-        "Live scene-debug instructions are retired: SCENE_FILE_V6_DEBUG produced "
-        "unreadable .rm files and blank device exports on software 3.27. "
-        "Use only offline comparison of existing captures; see tests/real/README.md."
-    )
+CACHE = work_dir("REMARKSYNC_SCENE_JSON", "rs-scene-json")
 
 
 def _summarise_ours(rm_path: Path) -> dict:
@@ -88,7 +45,7 @@ def _summarise_ours(rm_path: Path) -> dict:
     }
 
 
-def _walk(node, out: dict, depth: int = 0) -> dict:
+def _walk(node, out: dict) -> dict:
     """Count block and item kinds in the device's dump, whatever its shape."""
     if isinstance(node, dict):
         for key in ("type", "blockType", "itemType", "kind"):
@@ -98,10 +55,10 @@ def _walk(node, out: dict, depth: int = 0) -> dict:
             if key in node and not isinstance(node[key], (dict, list)):
                 out[f"field:{key}"] = node[key]
         for value in node.values():
-            _walk(value, out, depth + 1)
+            _walk(value, out)
     elif isinstance(node, list):
         for value in node:
-            _walk(value, out, depth + 1)
+            _walk(value, out)
     return out
 
 
@@ -120,13 +77,11 @@ def compare() -> None:
         print()
     if not dumps:
         print(f"no scene dumps in {CACHE}.")
-        print("Run 'steps' and follow step 4: the dump is not *-metadata.json,")
-        print("and a v5 notebook will never produce one.")
+        print("This reads existing captures only; see tests/real/README.md for why no new ones are made.")
         return
-    backup = Path(os.environ.get("REMARKSYNC_REAL_BACKUP", r"C:\Backups\reMarkable\raw"))
     for dump in dumps:
         doc_uuid, _, page_name = dump.name.partition("__")
-        rm_path = backup / doc_uuid / page_name.replace(".json", ".rm")
+        rm_path = RAW / doc_uuid / page_name.replace(".json", ".rm")
         print(f"\n=== {dump.name} ===")
         try:
             data = json.loads(dump.read_text(encoding="utf-8", errors="replace"))
@@ -145,10 +100,8 @@ def compare() -> None:
             print("   (pull the backup again so the same revision is compared)")
 
 
-MODES = ("steps", "compare")
-
 if __name__ == "__main__":
-    mode = sys.argv[1] if len(sys.argv) > 1 else "steps"
-    if mode not in MODES:
-        raise SystemExit(f"unknown mode {mode!r}; try one of {', '.join(MODES)}")
-    globals()[mode]()
+    mode = sys.argv[1] if len(sys.argv) > 1 else "compare"
+    if mode != "compare":
+        raise SystemExit(f"unknown mode {mode!r}; the only mode is 'compare' (live scene-debug steps are retired)")
+    compare()

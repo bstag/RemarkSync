@@ -17,8 +17,8 @@ from .inkgeometry import stroke_polygons
 from .layout import PageFrame, placeholder_frame
 from .backup import TEMPLATE_BLANK, TEMPLATE_DOTS, TEMPLATE_GRID, TEMPLATE_ISOMETRIC, TEMPLATE_RULED, DocItem, PageRef
 from .rmdata import PageModel, Stroke
-from .textmetrics import (CHECKBOX_GAP, CHECKBOX_SIZE, FONT_SANS, FONT_SERIF, MARKER_GAP, TEXT_LEFT_PAD,
-                          lay_out_lines, style)
+from .textmetrics import (CHECK_MARK, CHECKBOX_GAP, CHECKBOX_SIZE, FONT_SANS, FONT_SERIF, MARKER_GAP,
+                          NUMBER_MARKER_NUDGE, TEXT_LEFT_PAD, lay_out_lines, marker_label, numbered)
 
 _TEMPLATE_PEN = QColor(0xB3, 0xB3, 0xB3)
 
@@ -73,10 +73,6 @@ class PdfUnderlay:
         self._cache: dict[tuple, QImage] = {}
         self._cache_bytes = cache_bytes
 
-    @property
-    def page_count(self) -> int:
-        return self.doc.page_count
-
     def page_size(self, index: int | None) -> tuple[float, float] | None:
         """Base page size in PDF points (aspect ratio is what the layout uses)."""
         if index is None or not 0 <= index < self.doc.page_count:
@@ -111,12 +107,11 @@ class PdfUnderlay:
 # Opaque pens at least this wide are filled as outlines; thinner ones are stroked.
 OUTLINE_MIN_WIDTH = 5.0
 
-# Segments whose widths round to the same step share one path. Opaque ink
-# can afford fine steps; translucent ink (highlighter, marker) uses coarse
-# ones because every run boundary is a spot where two round caps overlap
-# and multiply-blend darker.
+# Segments whose widths round to the same step share one path. Only opaque
+# ink is stroked this way, and it can afford fine steps; translucent ink is
+# filled as one outline instead, because every run boundary would be a spot
+# where two round caps overlap and multiply-blend darker.
 WIDTH_STEP_OPAQUE = 0.25
-WIDTH_STEP_TRANSLUCENT = 2.0  # unused since translucent pens are filled as outlines; kept for the step rule
 
 
 def _stroke_paths(stroke: Stroke) -> list[tuple[float, QPainterPath]]:
@@ -128,7 +123,7 @@ def _stroke_paths(stroke: Stroke) -> list[tuple[float, QPainterPath]]:
         for x, y in stroke.points[1:]:
             path.lineTo(QPointF(x, y))
         return [(stroke.widths[0] if stroke.widths else stroke.width, path)]
-    step = WIDTH_STEP_TRANSLUCENT if stroke.highlighter else WIDTH_STEP_OPAQUE
+    step = WIDTH_STEP_OPAQUE
     paths: dict[float, QPainterPath] = {}
     pts, ws = stroke.points, stroke.widths
     current: float | None = None
@@ -229,9 +224,6 @@ class PageCanvas(QWidget):
         if self._frame.page.error:
             label += f"\n{self._frame.page.error}"
         self.setToolTip(label)
-
-    def model(self) -> PageModel:
-        return self._frame.page
 
     def set_scale(self, scale: float) -> None:
         self._scale = scale
@@ -349,15 +341,10 @@ class PageCanvas(QWidget):
         for block in model.texts:
             if not block.layer_visible or not block.text.strip():
                 continue
-            lines = block.lines or lay_out_lines(block.paragraphs)
-            counters: dict[str, int] = {}  # running numbers for numbered lists
-            last_style = None
-            for ln in lines:
-                st = style(ln.style)
-                if ln.first:
-                    if st.marker in ("number", "letter"):
-                        counters[st.name] = counters.get(st.name, 0) + 1 if last_style == st.name else 1
-                    last_style = st.name
+            # a block normally arrives laid out; one that does not is wrapped at
+            # its own width, as the decoder and the PDF export wrap it
+            lines = block.lines or lay_out_lines(block.paragraphs or [("PLAIN", block.text)], block.width)
+            for ln, st, number in numbered(lines):
                 x = block.pos_x + TEXT_LEFT_PAD + st.indent
                 y = block.pos_y + ln.baseline
                 font = QFont(FONT_SERIF if st.serif else FONT_SANS)
@@ -368,17 +355,17 @@ class PageCanvas(QWidget):
                 if ln.text:
                     painter.drawText(QPointF(x, y), ln.text)
                 if ln.first and st.marker:
-                    self._paint_marker(painter, st.marker, x, y, st.size, counters.get(st.name, 1))
+                    self._paint_marker(painter, st.marker, x, y, number)
         painter.restore()
 
     @staticmethod
-    def _paint_marker(painter: QPainter, marker: str, x: float, baseline: float, size: float, number: int) -> None:
+    def _paint_marker(painter: QPainter, marker: str, x: float, baseline: float, number: int) -> None:
+        label = marker_label(marker, number)
         if marker in ("bullet", "bullet2"):
-            painter.drawText(QPointF(x - MARKER_GAP, baseline), "\u2022" if marker == "bullet" else "\u25e6")
+            painter.drawText(QPointF(x - MARKER_GAP, baseline), label)
         elif marker in ("number", "letter"):
-            label = f"{number}." if marker == "number" else f"{chr(96 + ((number - 1) % 26) + 1)}."
             width = painter.fontMetrics().horizontalAdvance(label)
-            painter.drawText(QPointF(x - MARKER_GAP + 12 - width, baseline), label)
+            painter.drawText(QPointF(x - MARKER_GAP + NUMBER_MARKER_NUDGE - width, baseline), label)
         elif marker in ("box", "box_checked"):
             top = baseline - CHECKBOX_SIZE
             rect = QRectF(x - CHECKBOX_GAP, top, CHECKBOX_SIZE, CHECKBOX_SIZE)
@@ -387,6 +374,10 @@ class PageCanvas(QWidget):
             painter.setBrush(Qt.NoBrush)
             painter.drawRect(rect)
             if marker == "box_checked":
-                painter.drawLine(QPointF(rect.left() + 5, rect.top() + 13), QPointF(rect.left() + 11, rect.bottom() - 5))
-                painter.drawLine(QPointF(rect.left() + 11, rect.bottom() - 5), QPointF(rect.right() - 4, rect.top() + 5))
+                (ax, ay), (bx, by), (cx, cy) = CHECK_MARK
+                start = QPointF(rect.left() + ax, rect.top() + ay)
+                low = QPointF(rect.left() + bx, rect.bottom() + by)
+                end = QPointF(rect.right() + cx, rect.top() + cy)
+                painter.drawLine(start, low)
+                painter.drawLine(low, end)
             painter.restore()

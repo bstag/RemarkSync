@@ -5,9 +5,6 @@ and cloud disappearance is reported without propagating local deletions.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
-import html
-import json
 import os
 from pathlib import Path
 import tempfile
@@ -16,82 +13,24 @@ import uuid
 import zipfile
 
 from .backup import open_rmdoc, safe_extract_names
-from .backupstore import publish, recover, write_json, writer_lock
-from .cloud import CloudClient, CloudError, HASH, _digest
+from .backupstore import publish, read_json, recover, write_json
+from .cloud import CloudClient, CloudError
 from .pdfexport import export_pdf
 from .pull import _document_entries, _move_document, _validate_document, local_signature
+from .store import CLOUD_STORE_FORMAT, HASH, STATE, claim_store, exclusive, finish_sync, load_state, mark_absent
+from .store import new_report, preservation_pdf, recording_failure
+from .store import catalog as _catalog, digest as _digest, now as _now, revision_dir as _revision
+from .store import verify_files as _verify_files
+
+# ``mark_absent``, ``preservation_pdf`` and ``STATE`` are part of this module's
+# interface although they live in :mod:`remarksync.store`: scripts and the
+# deployment check import them from here.
+__all__ = ["DEFAULT_DESTINATION", "MARKER", "STATE", "mark_absent", "preservation_pdf", "reexport_pdf", "sync"]
 
 MARKER = ".remarksync-cloud-store.json"
-STATE = "sync-state.json"
-
-
-def mark_absent(documents: dict[str, dict], present) -> None:
-    """Note which preserved documents the source no longer lists.
-
-    A marker and nothing more: the record and its files stay, and the marker
-    goes the moment the source lists the document again. ``absent_since`` keeps
-    the first time it was seen gone.
-    """
-    for identifier, record in documents.items():
-        if identifier in present:
-            record.pop("absent_since", None)
-        else:
-            record.setdefault("absent_since", _now())
-
-
-def _now():
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _catalog(root: Path, state: dict) -> None:
-    rows = []
-    for identifier, record in sorted(state["documents"].items(), key=lambda pair: pair[1]["name"].lower()):
-        if not record.get("pdf_sha256"):
-            continue
-        path = preservation_pdf(_revision(root, identifier, record["revision"]), record)
-        warnings = record.get("warnings", [])
-        diagnostics = sum("decoder warnings" in warning for warning in warnings)
-        warning = " ".join(warning for warning in warnings if "decoder warnings" not in warning)
-        if diagnostics:
-            warning += f" {diagnostics} pages have decoder warnings; see the PDF's preservation manifest."
-        rows.append(f'<tr><td><a href="{html.escape(path.relative_to(root).as_posix(), quote=True)}">'
-                    f'{html.escape(record["name"])}</a></td><td>{record.get("pages", "")}</td>'
-                    f'<td>{html.escape(warning)}</td></tr>')
-    content = ('<!doctype html><html lang="en"><meta charset="utf-8"><title>RemarkSync preservation PDFs</title>'
-               '<style>body{font:16px system-ui;max-width:1100px;margin:48px auto;padding:0 24px;color:#20252b}'
-               'table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:16px;border-bottom:1px solid #ddd}'
-               'td:last-child{font-size:14px;color:#555}a{color:#12639c}h1{font-size:30px}</style>'
-               '<h1>Preservation PDFs</h1><p>Open a document to view its original PDF with preserved highlights and notes. '
-               'Earlier versions and original annotation files remain in your cloud library folder.</p>'
-               '<p>Placement and decoder warnings are listed below; inspect affected exports against the tablet.</p>'
-               '<table><thead><tr><th>Document</th><th>Pages</th><th>Export notes</th></tr></thead><tbody>'
-               + ''.join(rows) + '</tbody></table></html>')
-    pending = root / "preservation.pending.html"
-    pending.write_text(content, encoding="utf-8")
-    os.replace(pending, root / "preservation.html")
-
-
-def _verify_files(raw: Path, files: list[dict]) -> bool:
-    safe_extract_names([item["path"] for item in files], raw)
-    return all((raw / item["path"]).is_file() and _digest(raw / item["path"]) == item["sha256"] for item in files)
-
-
-def _revision(root: Path, identifier: str, revision: str) -> Path:
-    if not HASH.fullmatch(revision):
-        raise CloudError("Invalid cloud revision hash.")
-    target = root / "revisions" / identifier / revision
-    if not target.resolve().is_relative_to(root.resolve()):
-        raise CloudError("Cloud revision path escapes the sync store.")
-    return target
-
-
-def preservation_pdf(target: Path, record: dict) -> Path:
-    """Resolve a retained rendering by hash, with legacy export compatibility."""
-    digest = record.get("pdf_sha256")
-    if not isinstance(digest, str) or not HASH.fullmatch(digest):
-        raise ValueError("Invalid preservation PDF checksum.")
-    rendered = target / "renderings" / digest / "annotated.pdf"
-    return rendered if rendered.parent.exists() else target / "annotated.pdf"
+# Where the CLI and the dialog keep the cloud store unless told otherwise:
+# beside the installation, never relative to wherever the command was run.
+DEFAULT_DESTINATION = Path(__file__).resolve().parents[2] / "output" / "cloud-sync"
 
 
 def reexport_pdf(destination: Path, identifier: str, expected_revision: str) -> dict:
@@ -103,10 +42,10 @@ def reexport_pdf(destination: Path, identifier: str, expected_revision: str) -> 
     if str(uuid.UUID(identifier)) != identifier or not HASH.fullmatch(expected_revision):
         raise CloudError("Invalid document identity/revision.")
     root = Path(destination).resolve()
-    if json.loads((root / MARKER).read_text()).get("format") != "remarksync-cloud-v1":
+    if read_json(root / MARKER).get("format") != CLOUD_STORE_FORMAT:
         raise CloudError("Unknown cloud store format.")
-    with writer_lock(root):
-        state = json.loads((root / STATE).read_text())
+    with exclusive(root):
+        state = read_json(root / STATE)
         previous = state["documents"][identifier]
         if state.get("status") != "ok" or previous["revision"] != expected_revision:
             raise CloudError("Cloud document changed or a sync is incomplete; retry after it finishes.")
@@ -149,9 +88,17 @@ def _prepare(client, entry, token, root, stage):
     record_path = target / "revision.json"
     archive = target / "document.rmdoc"
     if target.exists():
-        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record = read_json(record_path)
         if record["document"] != identifier or record["revision"] != revision or _digest(archive) != record["archive_sha256"]:
             raise CloudError("Existing raw revision failed verification; it was retained for investigation.")
+        raw = stage / "raw"
+        raw.mkdir()
+        with zipfile.ZipFile(archive) as zipped:
+            safe_extract_names(zipped.namelist(), raw)
+            zipped.extractall(raw)
+        if not _verify_files(raw, record["files"]):
+            raise CloudError("Cached cloud archive has invalid file contents.")
+        _validate_document(raw, identifier, local_signature(raw, identifier))
     else:
         bundle = stage / "bundle"
         bundle.mkdir()
@@ -186,16 +133,9 @@ def _prepare(client, entry, token, root, stage):
             raise CloudError("Extracted cloud document differs from its indexed files.")
         write_json(bundle / "revision.json", record)
         target.parent.mkdir(parents=True, exist_ok=True)
+        # The staged files were verified against the index and validated just
+        # above, before the revision was published; nothing has touched them since.
         bundle.rename(target)
-    raw = stage / "raw"
-    if not raw.exists():
-        raw.mkdir()
-        with zipfile.ZipFile(archive) as zipped:
-            safe_extract_names(zipped.namelist(), raw)
-            zipped.extractall(raw)
-    if not _verify_files(raw, record["files"]):
-        raise CloudError("Cached cloud archive has invalid file contents.")
-    _validate_document(raw, identifier, local_signature(raw, identifier))
     # A failed PDF remains retryable from the raw archive without downloading it again.
     if record["kind"] == "DocumentType" and record["file_type"] in ("pdf", "epub"):
         pdf = target / "annotated.pdf"
@@ -217,28 +157,24 @@ def _prepare(client, entry, token, root, stage):
 
 
 def sync(client: CloudClient, destination: Path, *, pdfs_only: bool = False, progress=None) -> dict:
-    root = Path(destination).resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    marker = root / MARKER
-    if not marker.exists() and any(root.iterdir()):
-        raise CloudError("Choose an empty destination or an existing RemarkSync cloud store; the USB backup cannot be used here.")
-    with writer_lock(root):
+    root, marker = claim_store(destination, MARKER, "Choose an empty destination or an existing RemarkSync cloud store; "
+                               "the USB backup cannot be used here.")
+    with exclusive(root):
         if marker.exists():
-            if json.loads(marker.read_text()).get("format") != "remarksync-cloud-v1":
+            if read_json(marker).get("format") != CLOUD_STORE_FORMAT:
                 raise CloudError("Unknown cloud store format.")
         else:
-            write_json(marker, {"format": "remarksync-cloud-v1"})
+            write_json(marker, {"format": CLOUD_STORE_FORMAT})
         raw_root = root / "raw"
         raw_root.mkdir(exist_ok=True)
         state_path = root / STATE
-        state = json.loads(state_path.read_text()) if state_path.exists() else {"documents": {}}
+        state = load_state(state_path)
         state["last_attempt"] = _now()
         state["status"] = "running"
         write_json(state_path, state)
-        result = {"downloaded": [], "changed": [], "unchanged": [], "missing": [], "failed": [], "pdf_failed": [],
-                  "preserved": [], "raw_library": str(raw_root), "cloud_document_writes": 0}
-        try:
-            with writer_lock(raw_root):
+        result = new_report(raw_root)
+        with recording_failure(state_path, state):
+            with exclusive(raw_root):
                 recover(raw_root)
                 with client.snapshot() as (all_remote, token):
                     remote = {key: entry for key, entry in all_remote.items() if not pdfs_only
@@ -285,15 +221,4 @@ def sync(client: CloudClient, destination: Path, *, pdfs_only: bool = False, pro
                                     result["failed"].append({"document": identifier, "error": "Local publication failed; recovery/history retained."})
                 result["missing"] = sorted(set(state["documents"]) - set(all_remote))
                 mark_absent(state["documents"], all_remote)
-            result["exports_available"] = sum(bool(record.get("pdf_sha256")) for record in state["documents"].values())
-            state["status"] = "partial" if result["failed"] or result["pdf_failed"] else "ok"
-            state["last_report"] = result
-            if state["status"] == "ok":
-                state["last_success"] = _now()
-            write_json(state_path, state)
-            _catalog(root, state)
-            return dict(result, status=state["status"], last_success=state.get("last_success"))
-        except Exception:
-            state["status"] = "error"
-            write_json(state_path, state)
-            raise
+            return finish_sync(root, state_path, state, result, ok=not (result["failed"] or result["pdf_failed"]))

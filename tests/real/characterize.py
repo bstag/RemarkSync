@@ -18,8 +18,6 @@ Two lessons already baked in here, both learned from the first run:
 
 from __future__ import annotations
 
-import hashlib
-import os
 import statistics
 import sys
 from pathlib import Path
@@ -28,19 +26,14 @@ import numpy as np
 
 from remarksync.rmdata import V5_HEADER, decode_page
 
+from .paths import RAW, STORE, sha256_of
 from .oracle import (Pairing, build_frame, compare, contact_sheet, load_thumbnail, pair_pages, paper_box,
                      render_paper)
 
-RAW = Path(os.environ.get("REMARKSYNC_REAL_BACKUP", r"C:\Backups\reMarkable\raw"))
-STORE = Path(os.environ.get("REMARKSYNC_DESKTOP_STORE", str(Path(os.environ["APPDATA"]) / "remarkable" / "desktop")))
 DEMO = Path(__file__).resolve().parents[2] / "demo"
 
 # The width above which the v5 decoder currently calls a stroke translucent.
 V5_TRANSLUCENT_THRESHOLD = 8.0
-
-
-def _sha(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def trustworthy_pairs() -> list[Pairing]:
@@ -48,7 +41,7 @@ def trustworthy_pairs() -> list[Pairing]:
     out = []
     for pair in pair_pages(RAW, STORE):
         twin = STORE / pair.doc.uuid / f"{pair.page.rm_path.stem}.rm"
-        if twin.exists() and _sha(twin) == _sha(pair.page.rm_path):
+        if twin.exists() and sha256_of(twin) == sha256_of(pair.page.rm_path):
             out.append(pair)
     return out
 

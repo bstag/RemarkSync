@@ -23,17 +23,16 @@ from __future__ import annotations
 
 import os
 import sys
-from pathlib import Path
 
 from remarksync.backup import iter_docs, scan_backup
 from remarksync.rmdata import decode_page
 from remarksync.textmetrics import TEXT_WIDTHS, lay_out_lines, style
 
 from .exported import compare, drawn_lines
+from .paths import RAW, work_dir
 from .tablet import export_pdf
 
-RAW = Path(os.environ.get("REMARKSYNC_REAL_BACKUP", r"C:\Backups\reMarkable\raw"))
-WORK = Path(os.environ.get("REMARKSYNC_ROUNDTRIP", str(Path(os.environ["TEMP"]) / "rs-roundtrip")))
+WORK = work_dir("REMARKSYNC_ROUNDTRIP", "rs-roundtrip")
 # The worksheet that was actually typed, on 2026-09-18. Override it if you make
 # another; the fixture note below says what has to be on it.
 DOC_NAME = os.environ.get("REMARKSYNC_WIDTH_DOC", "Test bob")

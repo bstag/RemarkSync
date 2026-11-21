@@ -39,7 +39,8 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from .backup import safe_extract_names
-from .backupstore import publish, recover, validate_id, writer_lock
+from .backupstore import MAX_ARCHIVE_BYTES, MAX_ARCHIVE_ENTRIES, copy_entry, has_unfinished, publish, recover
+from .backupstore import validate_id, writer_lock
 
 log = logging.getLogger(__name__)
 
@@ -105,7 +106,7 @@ class SshTablet:
         manifest: Manifest = {}
         for start in range(0, len(uuids), FETCH_BATCH):
             batch = uuids[start : start + FETCH_BATCH]
-            patterns = [f"{u}.*" for u in batch] + [u for u in batch]
+            patterns = [f"{u}.*" for u in batch] + batch
             # a document without a page directory makes tar report an error
             # but still emit the rest; tolerate that by listing existing names
             with self._tar([f"$(ls -d {p} 2>/dev/null)" for p in patterns]) as data, tarfile.open(fileobj=data, mode="r:") as tar:
@@ -127,13 +128,8 @@ class LocalTablet:
         manifest: Manifest = {}
         for u in uuids:
             for src in _document_entries(self.root, u):
-                if src.is_symlink() or (src.is_dir() and any(p.is_symlink() for p in src.rglob("*"))):
-                    raise ValueError(f"refusing document link: {src}")
+                copy_entry(src, into / src.name)  # refuses links before copying anything
                 manifest.update(_entry_manifest(self.root, src))
-                if src.is_dir():
-                    shutil.copytree(src, into / src.name, dirs_exist_ok=True)
-                else:
-                    shutil.copy2(src, into / src.name)
         return manifest
 
 
@@ -204,7 +200,7 @@ def pull(
     dest = Path(dest)
     tablet = tablet or SshTablet(host, timeout=timeout)
     if dry_run:
-        if any((dest / ".remarksync-transactions").glob("*.json")):
+        if has_unfinished(dest):
             raise RuntimeError("an interrupted pull needs recovery; run a normal pull before a dry run")
         return _pull_locked(dest, tablet, progress, force, prune, True)
     dest.mkdir(parents=True, exist_ok=True)
@@ -285,7 +281,7 @@ def _safe_extract(tar: tarfile.TarFile, into: Path) -> Manifest:
     safe_extract_names([m.name for m in members], into)
     if any(not (m.isfile() or m.isdir()) for m in members):
         raise ValueError("refusing archive link or special member type")
-    if len(members) > 200_000 or sum(m.size for m in members) > 8 * 1024**3:
+    if len(members) > MAX_ARCHIVE_ENTRIES or sum(m.size for m in members) > MAX_ARCHIVE_BYTES:
         raise ValueError("archive exceeds extraction limits")
     # Write only regular files/directories: no tar link or permission metadata
     # is applied, independently of interpreter-specific extraction defaults.

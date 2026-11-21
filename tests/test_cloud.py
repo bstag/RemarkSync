@@ -236,3 +236,38 @@ def test_listing_cache_contract_and_warnings(source):
     cache["SchemaVersion"] = "future"
     with pytest.raises(cloud.CloudError, match="schema"):
         cloud._documents(cache)
+
+
+def test_account_in_use_is_a_clear_cloud_error(tmp_path):
+    from remarksync.backupstore import writer_lock
+    executable = tmp_path / "rmapi.exe"
+    executable.touch()
+    client = cloud.CloudClient(executable, tmp_path / "profile")
+    client.profile.mkdir()
+    client.secret.write_bytes(b"not read: the lock is refused first")
+    with writer_lock(client.profile):
+        with pytest.raises(cloud.CloudError, match="Another RemarkSync cloud operation"):
+            with client.snapshot():
+                pass
+    assert not list(client.profile.glob("session-*"))
+
+
+@pytest.mark.parametrize("name,inside,safe", [
+    (IDENTIFIER + ".content", True, True),
+    (IDENTIFIER + "/0/0.rm", True, True),
+    (IDENTIFIER + "x.content", False, True),
+    ("sibling.content", False, True),
+    (IDENTIFIER, False, True),
+    (IDENTIFIER + "/a b.rm", True, False),
+    (IDENTIFIER + "/con.rm", True, False),
+    (IDENTIFIER + "/LPT1", True, False),
+    (IDENTIFIER + "/../escape", True, False),
+    (IDENTIFIER + "/a\\b", True, False),
+    (IDENTIFIER + "/caf\u00e9.rm", True, False),
+    (IDENTIFIER + "/line\nbreak", True, False),
+    (IDENTIFIER + "/trailing.", True, False),
+    (IDENTIFIER + "//empty", True, False),
+])
+def test_one_member_name_policy_for_download_and_send(name, inside, safe):
+    assert cloud._member_inside(name, IDENTIFIER) is inside
+    assert cloud._member_safe(name) is safe

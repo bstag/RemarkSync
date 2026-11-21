@@ -255,3 +255,28 @@ def test_web_limits_backups_without_blocking_status_requests(library, monkeypatc
             listener.shutdown()
             thread.join()
         assert results
+
+
+def test_backup_and_restore_keep_the_removed_from_tablet_mark(library, tmp_path):
+    root, state, _files, _past = library
+    state["documents"][DOCUMENT]["absent_since"] = "2026-11-21T10:00:00+00:00"
+    archive = download(root, state, tmp_path / "backup.zip")
+    assert backup.verify(archive)["documents"] == 1
+    backup.restore(archive, tmp_path / "recovered")
+    restored = json.loads((tmp_path / "recovered" / backup.STATE).read_bytes())["documents"]
+    assert restored[DOCUMENT]["absent_since"] == "2026-11-21T10:00:00+00:00"
+    assert "absent_since" not in restored[FOLDER]
+
+
+def test_backup_made_before_the_mark_was_kept_still_verifies_and_restores(library, tmp_path, monkeypatch):
+    root, state, _files, _past = library
+    state["documents"][DOCUMENT]["absent_since"] = "2026-11-21T10:00:00+00:00"
+    current = backup.RECORD_FIELDS
+    monkeypatch.setattr(backup, "RECORD_FIELDS", tuple(field for field in current if field != "absent_since"))
+    archive = download(root, state, tmp_path / "earlier.zip")
+    monkeypatch.setattr(backup, "RECORD_FIELDS", current)
+    with zipfile.ZipFile(archive) as zipped:
+        assert "absent_since" not in zipped.read(backup.STATE).decode()
+    assert backup.verify(archive)["retained_revisions"] == 3
+    backup.restore(archive, tmp_path / "recovered")
+    assert (tmp_path / "recovered" / "raw" / (DOCUMENT + ".metadata")).is_file()

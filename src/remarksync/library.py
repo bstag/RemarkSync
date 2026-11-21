@@ -14,10 +14,10 @@ run a long operation on a worker thread. No Qt dependencies here.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from .backup import DocItem, iter_docs, scan_backup
+from .backupstore import has_unfinished, read_json
 from .recognize import CACHE_NAME, RecognitionCache, handwriting_extractor, tablet_conversion
 from .search import DEFAULT_EXTRACTORS, IndexReport, Progress, SearchHit, SearchIndex
 
@@ -90,7 +90,7 @@ class Library:
         ``raw`` folder. They stay in ``tree``; a caller decides how to show them.
         """
         try:
-            state = json.loads((self.root.parent / "sync-state.json").read_text(encoding="utf-8"))
+            state = read_json(self.root.parent / "sync-state.json")
             return {key: str(record["absent_since"]) for key, record in state["documents"].items()
                     if isinstance(record, dict) and record.get("absent_since")}
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
@@ -129,7 +129,7 @@ class Library:
         boolean in hand can pass it, instead of choosing between two methods
         and turning the boolean back into a branch.
         """
-        if any((self.root / ".remarksync-transactions").glob("*.json")):
+        if has_unfinished(self.root):
             raise RuntimeError("backup has an unfinished pull; recover it before indexing")
         return self._index.refresh(self.documents, progress, force=force)
 

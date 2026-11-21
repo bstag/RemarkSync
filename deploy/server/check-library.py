@@ -11,7 +11,7 @@ from remarksync.cloudsync import preservation_pdf
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('root', nargs='?', type=Path, default=Path('/data/library'))
 root = parser.parse_args().root
-state = json.loads((root / 'sync-state.json').read_text())
+state = json.loads((root / 'sync-state.json').read_bytes())  # bytes: the file is UTF-8 whatever the locale
 assert state['status'] == 'ok', 'Wait for a complete successful sync before verification'
 counts = dict(documents=0, folders=0, archives=0, raw_files=0, pdfs=0, original_attachments=0, scene_attachments=0)
 warnings = []

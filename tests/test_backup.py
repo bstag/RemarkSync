@@ -108,3 +108,28 @@ def test_open_rmdoc_accepts_an_ordinary_archive(tmp_path):
 
     doc = open_rmdoc(archive, extract_dir=tmp_path / "into")
     assert doc.name == "Notes"
+
+
+def test_active_cpages_order_and_files_root(tmp_path):
+    from remarksync.backup import DocItem, active_cpages
+
+    def page(identifier, key=None, deleted=False):
+        record = {"id": identifier}
+        if key is not None:
+            record["idx"] = {"value": key}
+        if deleted:
+            record["deleted"] = {"value": 1}
+        return record
+
+    ordered = {"cPages": {"pages": [page("second", "bb"), page("first", "ba"), page("gone", "aa", deleted=True)]}}
+    assert [p["id"] for p in active_cpages(ordered)] == ["first", "second"]
+    # one page without an order key: the stored order stands
+    partial = {"cPages": {"pages": [page("second", "bb"), page("first")]}}
+    assert [p["id"] for p in active_cpages(partial)] == ["second", "first"]
+    assert active_cpages({}) == [] and active_cpages({"cPages": {"pages": []}}) == []
+    assert active_cpages({"cPages": {"pages": ["flat-id"]}}) == []
+
+    assert DocItem(uuid="abc", doc_dir=tmp_path / "abc").files_root == tmp_path
+    assert DocItem(uuid="abc", doc_dir=tmp_path).files_root == tmp_path
+    assert DocItem(uuid="", doc_dir=tmp_path).files_root == tmp_path
+    assert DocItem(uuid="abc").files_root is None

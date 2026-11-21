@@ -5,16 +5,24 @@ from __future__ import annotations
 import unicodedata
 from collections import defaultdict
 from dataclasses import replace
+from functools import cache
 
 import pymupdf as fitz
 
 from .layout import PDF_SCALE
-from .textmetrics import (DESCENT_RATIO, FALLBACK_LINE_EXTRA, FIRST_BASELINE, TEXT_LEFT_PAD,
-                          TEXT_WRAP_INSET, TextLine, continuation, pitch, style, uses_fallback_font)
+from .textmetrics import DESCENT_RATIO, TEXT_LEFT_PAD, TEXT_WRAP_INSET, lay_out_lines, style
+
+
+@cache
+def _font_named(fontname):
+    # one object per face: building a Font is not free, and the exporter asks
+    # for one for every run of text it measures or writes
+    return fitz.Font(fontname=fontname)
 
 
 def pdf_font(st):
-    return fitz.Font(fontname="tiro" if st.serif else ("hebo" if st.weight >= 500 else "helv"))
+    """The built-in PDF face standing in for a paragraph style's device font."""
+    return _font_named("tiro" if st.serif else ("hebo" if st.weight >= 500 else "helv"))
 
 
 def body_columns(page):
@@ -101,25 +109,6 @@ def _wrap(text, st, width):
     return result
 
 
-def _flow_lines(block, width):
-    lines, y, previous, fallback = [], FIRST_BASELINE, None, False
-    for paragraph, (name, text) in enumerate(block.paragraphs or [("PLAIN", block.text)]):
-        st = style(name)
-        if previous is not None:
-            y += pitch(previous, st)
-        consumed = 0
-        for i, piece in enumerate(_wrap(text, st, width)):
-            if i:
-                y += continuation(st)
-            if fallback and lines:
-                y += FALLBACK_LINE_EXTRA
-            fallback = uses_fallback_font(piece)
-            consumed += len(piece) + (1 if i else 0)
-            lines.append(TextLine(paragraph, st.name, piece, y, i == 0, consumed))
-        previous = st
-    return lines
-
-
 def fit_notes_to_columns(model, paper, columns):
     """Copy only visible typed notes; leave raw models and ink untouched.
 
@@ -134,7 +123,8 @@ def fit_notes_to_columns(model, paper, columns):
         original_x = (block.pos_x + TEXT_LEFT_PAD - paper.x0) / PDF_SCALE
         column = min(columns, key=lambda c: abs(c.x0 - original_x))
         width = column.width * PDF_SCALE
-        lines = _flow_lines(block, width)
+        # the tablet's vertical rhythm, with the lines broken by the export font
+        lines = lay_out_lines(block.paragraphs or [("PLAIN", block.text)], width, wrap_fn=_wrap)
         height = max((ln.baseline + style(ln.style).size * DESCENT_RATIO for ln in lines), default=block.height)
         fitted.append(replace(block, pos_x=paper.x0 + column.x0 * PDF_SCALE - TEXT_LEFT_PAD,
                               width=width + TEXT_WRAP_INSET, height=height, lines=lines))

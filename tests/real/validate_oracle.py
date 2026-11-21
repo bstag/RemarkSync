@@ -12,21 +12,13 @@ Both are checked here before any assertion is built on top.
 
 from __future__ import annotations
 
-import hashlib
-import os
 import statistics
-from pathlib import Path
 
 import numpy as np
 
+from .paths import RAW, STORE, sha256_of
 from .oracle import INK_LEVEL, MARK_LEVEL, load_thumbnail, pair_pages, render_paper
 
-RAW = Path(os.environ.get("REMARKSYNC_REAL_BACKUP", r"C:\Backups\reMarkable\raw"))
-STORE = Path(os.environ.get("REMARKSYNC_DESKTOP_STORE", str(Path(os.environ["APPDATA"]) / "remarkable" / "desktop")))
-
-
-def _sha(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def revision_agreement() -> list:
@@ -39,7 +31,7 @@ def revision_agreement() -> list:
         if not twin.exists():
             missing += 1
             continue
-        if _sha(twin) == _sha(pair.page.rm_path):
+        if sha256_of(twin) == sha256_of(pair.page.rm_path):
             same += 1
             comparable.append(pair)
         else:

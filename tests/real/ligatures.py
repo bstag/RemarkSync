@@ -30,18 +30,17 @@ tablet, which can be deleted afterwards.
 
 from __future__ import annotations
 
-import os
 import string
 import sys
-from pathlib import Path
 
 from remarksync.textmetrics import ADVANCE_SANS, ADVANCE_SERIF, style
 
 from .exported import drawn_paragraphs
 from .fixture import compile_runs, style_for
+from .paths import work_dir
 from .tablet import document_id, export_pdf, upload as post_archive
 
-WORK = Path(os.environ.get("REMARKSYNC_LIGATURES", str(Path(os.environ["TEMP"]) / "rs-ligatures")))
+WORK = work_dir("REMARKSYNC_LIGATURES", "rs-ligatures")
 TITLE = "RemarkSync ligature scale"
 ARCHIVE = WORK / "ligatures.rmdoc"
 

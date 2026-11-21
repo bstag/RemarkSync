@@ -265,3 +265,18 @@ def test_put_runs_only_the_fixed_upload_command(tmp_path, monkeypatch, archive):
                 put(path, "/", False)
     assert [c[0][1:] for c in calls] == [["-ni", "put", "--force", "note.rmdoc", "/Projects"], ["-ni", "put", "note.rmdoc", "/"]]
     assert all(kw["env"]["RMAPI_TRACE"] == "0" and kw["capture_output"] and kw["cwd"] == tmp_path for _c, kw in calls)
+
+
+def test_send_command_reports_a_busy_account_in_one_line(tmp_path, archive, monkeypatch, capsys):
+    from remarksync.__main__ import main
+    from remarksync.backupstore import writer_lock
+    executable = tmp_path / "rmapi.exe"
+    executable.touch()
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    monkeypatch.setenv("REMARKSYNC_CLOUD_CLIENT", str(executable))
+    monkeypatch.setenv("REMARKSYNC_CLOUD_PROFILE", str(profile))
+    cloud.CloudClient().secret.write_bytes(b"not read: the lock is refused first")
+    with writer_lock(profile):
+        assert main(["send", str(archive), "--name", "Note"]) == 1
+    assert capsys.readouterr().out.strip() == "not sent: " + cloud.ACCOUNT_BUSY

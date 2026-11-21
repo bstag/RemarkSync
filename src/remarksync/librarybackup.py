@@ -18,16 +18,20 @@ import tempfile
 import uuid
 import zipfile
 
-from .cloud import HASH, _digest
-from .cloudsync import MARKER, STATE, _catalog, _now, preservation_pdf
-from .serversync import MAX_ARTIFACT, _extract, validate_manifest
+from .backupstore import read_json
+from .cloudsync import MARKER
+from .serversync import _extract, validate_manifest
+from .store import CLOUD_STORE_FORMAT, HASH, LIBRARY_FORMAT, MAX_ARTIFACT, MAX_METADATA, PUBLIC_RECORD_FIELDS, STATE
+from .store import copy_hashed, open_nofollow, preservation_pdf
+from .store import catalog as _catalog, digest as _digest, now as _now
 
 FORMAT = "remarksync-backup-v1"
 MAX_FILES = 100_000
-MAX_METADATA = 32 * 1024**2
 MAX_BACKUP_BYTES = 100 * 1024**3
-RECORD_FIELDS = ("document", "revision", "name", "kind", "file_type", "files", "archive_sha256",
-                 "pdf_sha256", "pages", "warnings", "pdf_error", "acquired_at", "pdf_rendered_at")
+# What the server publishes about a record, plus when it was acquired and
+# rendered. ``absent_since`` is among the published fields, so a restored
+# library still knows which documents the tablet had removed.
+RECORD_FIELDS = PUBLIC_RECORD_FIELDS + ("acquired_at", "pdf_rendered_at")
 RESTORE = b"""RemarkSync whole-library backup
 
 Includes retained raw document revisions, completed preservation PDFs and
@@ -50,14 +54,12 @@ def _json(value):
 def _record(identifier, record):
     clean = {key: record[key] for key in RECORD_FIELDS if key in record}
     clean["files"] = [{key: item[key] for key in ("path", "size", "sha256")} for item in record["files"]]
-    validate_manifest({"format": "remarksync-library-v1", "status": "ok", "documents": {identifier: clean}})
+    validate_manifest({"format": LIBRARY_FORMAT, "status": "ok", "documents": {identifier: clean}})
     return clean
 
 
 def _open(root: Path, path: Path):
-    if not path.resolve().is_relative_to(root) or any(p.is_symlink() for p in (path, *path.parents)):
-        raise ValueError("Backup source contains a link or escapes its library.")
-    stream = os.fdopen(os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)), "rb")
+    stream = open_nofollow(root, path, "Backup source contains a link or escapes its library.")
     if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
         stream.close()
         raise ValueError("Backup source is not a regular file.")
@@ -167,7 +169,7 @@ def snapshot(root: Path, state: dict) -> Snapshot:
         raise ValueError("A published revision is missing from retained storage.")
     clean_state = {"status": "ok", "last_success": state.get("last_success"), "documents": current}
     data(STATE, _json(clean_state))
-    data(MARKER, _json({"format": "remarksync-cloud-v1"}))
+    data(MARKER, _json({"format": CLOUD_STORE_FORMAT}))
     data("RESTORE.txt", RESTORE)
     if sum(entry.size for entry in entries) > MAX_BACKUP_BYTES:
         raise ValueError("Backup exceeds the 100 GiB supported size limit.")
@@ -198,16 +200,10 @@ def write_snapshot(plan: Snapshot, output) -> None:
         for entry in plan.entries:
             info = zipfile.ZipInfo(entry.name)
             info.file_size, info.external_attr = entry.size, (stat.S_IFREG | 0o600) << 16
-            checksum, size = hashlib.sha256(), 0
             with (io.BytesIO(entry.source) if isinstance(entry.source, bytes) else _open(plan.root, entry.source)) as source:
                 with zipped.open(info, "w", force_zip64=True) as target:
-                    while chunk := source.read(1024 * 1024):
-                        size += len(chunk)
-                        if size > entry.size:
-                            raise ValueError("Backup source changed during download.")
-                        checksum.update(chunk)
-                        target.write(chunk)
-            if size != entry.size or checksum.hexdigest() != entry.sha256:
+                    size, checksum = copy_hashed(source, target, entry.size)
+            if size != entry.size or checksum != entry.sha256:
                 raise ValueError("Backup source changed during download.")
         manifest = {"format": FORMAT, "created_at": plan.created_at, "last_success": plan.last_success,
                     "current_entries": plan.documents, "retained_revisions": plan.revisions,
@@ -272,10 +268,10 @@ def verify(archive: Path) -> dict:
             with zipped.open(name) as stream:
                 if hashlib.file_digest(stream, "sha256").hexdigest() != item["sha256"]:
                     raise ValueError("Backup member checksum mismatch.")
-        if _read_json(zipped, MARKER) != {"format": "remarksync-cloud-v1"}:
+        if _read_json(zipped, MARKER) != {"format": CLOUD_STORE_FORMAT}:
             raise ValueError("Invalid restored store format.")
         state = _read_json(zipped, STATE)
-        validate_manifest(dict(state, format="remarksync-library-v1"))
+        validate_manifest(dict(state, format=LIBRARY_FORMAT))
         records = {}
         for name in expected:
             if not name.endswith("/revision.json"):
@@ -338,7 +334,7 @@ def restore(archive: Path, destination: Path) -> dict:
                     shutil.copyfileobj(source, out, 1024 * 1024)
                 if target.stat().st_size != item["size"] or _digest(target) != item["sha256"]:
                     raise ValueError("Restore copy failed verification.")
-        state = json.loads((stage / STATE).read_text(encoding="utf-8"))
+        state = read_json(stage / STATE)
         raw = stage / "raw"
         raw.mkdir()
         for identifier, record in state["documents"].items():

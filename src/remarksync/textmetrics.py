@@ -21,8 +21,8 @@ paragraph per letter pair for the ligatures (tests/real). No Qt here.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
-from typing import Iterable
 
 # -- the text block ----------------------------------------------------------
 
@@ -124,6 +124,14 @@ STYLE_CODES: dict[int, str] = {
 MARKER_GAP = 28.0  # marker glyph this far left of the text
 CHECKBOX_SIZE = 26.0
 CHECKBOX_GAP = 41.0  # checkbox square this far left of the text
+# A number or letter label is right-aligned: its right-hand end sits this far
+# right of where a bullet glyph starts.
+NUMBER_MARKER_NUDGE = 12.0
+BULLET_GLYPHS = {"bullet": "•", "bullet2": "◦"}
+# The tick in a checked box, as three points. Each is (dx, dy) from a corner of
+# the box: the left-hand point from its top-left, the low point from its
+# bottom-left, the right-hand point from its top-right.
+CHECK_MARK = ((5.0, 13.0), (11.0, -5.0), (-4.0, 5.0))
 
 
 def style(name: str | None) -> Style:
@@ -133,6 +141,17 @@ def style(name: str | None) -> Style:
 
 def style_name(code: int) -> str:
     return STYLE_CODES.get(code, "PLAIN")
+
+
+def marker_label(marker: str | None, number: int = 1) -> str | None:
+    """The text drawn in a list paragraph's indent: a bullet glyph, ``3.`` or
+    ``c.``. None for a checkbox, which is drawn rather than set, and for a
+    style with no marker."""
+    if marker == "number":
+        return f"{number}."
+    if marker == "letter":
+        return f"{chr(97 + (number - 1) % 26)}."
+    return BULLET_GLYPHS.get(marker or "")
 
 
 # -- vertical rhythm ---------------------------------------------------------
@@ -220,7 +239,6 @@ DEFAULT_ADVANCE_SERIF = 0.52
 # what running text asks for. The residue is the kerning we leave out, which on
 # the marks that kern at all is up to 0.06 em -- about 4 px in a heading, 2 in
 # body text, so it takes several of them on one line to move a break.
-KERNING_UNMODELLED = 0.06
 # Pairs the device fonts set as a single glyph, with that glyph's advance in em.
 # Measured 2026-09-18 by tests/real/ligatures.py, which put a paragraph of each
 # f-pair on the tablet and read the glyph stream of its export back: a ligature
@@ -404,10 +422,32 @@ class TextLine:
     chars: int  # characters of the paragraph consumed up to the end of this line
 
 
+def _consumed(text: str, piece: str, at: int) -> int:
+    """How far into ``text`` a line ends, given that the line before it ended
+    at ``at``.
+
+    A break between words swallows the space it falls on; a break inside a word
+    swallows nothing. Counting one character for every break put each line after
+    a mid-word break one character late, and ink pinned to the first character
+    of such a line on the line above.
+    """
+    if text.startswith(" " + piece, at):
+        return at + 1 + len(piece)
+    if text.startswith(piece, at):
+        return at + len(piece)
+    return at + 1 + len(piece)  # a wrap that rewrote the text: assume a separator
+
+
 def lay_out_lines(paragraphs: Iterable[tuple[str, str]],
-                  box_width: float = TEXT_WIDTH) -> list[TextLine]:
+                  box_width: float = TEXT_WIDTH,
+                  wrap_fn: Callable[[str, Style, float], list[str]] = wrap) -> list[TextLine]:
     """Every line of a block ``box_width`` wide, with baselines relative to
-    the block's pos_y."""
+    the block's pos_y.
+
+    ``wrap_fn`` decides where the lines break. It is the tablet's own wrapping
+    unless a caller sets the text in another font (see :mod:`notelayout`); the
+    vertical rhythm is the same either way.
+    """
     lines: list[TextLine] = []
     y = FIRST_BASELINE
     previous: Style | None = None
@@ -417,13 +457,13 @@ def lay_out_lines(paragraphs: Iterable[tuple[str, str]],
         if previous is not None:
             y += pitch(previous, s)
         consumed = 0
-        for i, piece in enumerate(wrap(text, s, box_width)):
+        for i, piece in enumerate(wrap_fn(text, s, box_width)):
             if i:
                 y += continuation(s)
             if previous_fallback and lines:
                 y += FALLBACK_LINE_EXTRA
             previous_fallback = uses_fallback_font(piece)
-            consumed += len(piece) + (1 if i else 0)
+            consumed = _consumed(text, piece, consumed) if i else len(piece)
             lines.append(TextLine(k, s.name, piece, y, i == 0, consumed))
         previous = s
     return lines
@@ -439,6 +479,24 @@ def block_height(paragraphs: Iterable[tuple[str, str]],
     return last.baseline + DESCENT_RATIO * style(last.style).size
 
 
+def numbered(lines: Iterable[TextLine]) -> Iterator[tuple[TextLine, Style, int]]:
+    """Each line with its style and the running number of its paragraph.
+
+    A numbered or lettered list counts up while paragraphs of the same style
+    follow one another and starts again at 1 after anything else. The number is
+    1 for every style that is not counted.
+    """
+    counters: dict[str, int] = {}
+    last_style = None
+    for line in lines:
+        st = style(line.style)
+        if line.first:
+            if st.marker in ("number", "letter"):
+                counters[st.name] = counters.get(st.name, 0) + 1 if last_style == st.name else 1
+            last_style = st.name
+        yield line, st, counters.get(st.name, 1)
+
+
 # There was a paragraph_advance() here, charging a paragraph for its own lines
 # plus the gap to the *next* one -- assumed to be body text. The compiler summed
 # it to fill a page, so a page carrying a heading was undercharged by the
@@ -451,14 +509,11 @@ def block_height(paragraphs: Iterable[tuple[str, str]],
 
 FONT_SERIF = "Georgia"  # stand-ins for the device fonts
 FONT_SANS = "Segoe UI"
-TEXT_FONT_PX = STYLES["PLAIN"].size  # older name
-TEXT_MIN_BOX_WIDTH = 50.0
 
 # -- the compiler ------------------------------------------------------------
 
 # Space below the last line before a page break.
 PAGE_BOTTOM_MARGIN = 24.0
-CHARS_PER_LINE = chars_per_line(STYLES["PLAIN"])  # older name
 
 
 def page_block_room(paper_height: float | None = None) -> float:
@@ -480,7 +535,3 @@ def lines_per_page(paper_height: float | None = None) -> int:
     room = page_block_room(paper_height) - FIRST_BASELINE - DESCENT_RATIO * STYLES["PLAIN"].size
     return 1 + int(room // BODY_PITCH)
 
-
-def estimated_lines(paragraph: str, name: str = "PLAIN") -> int:
-    """Lines the tablet will wrap a paragraph onto."""
-    return len(wrap(paragraph, style(name)))

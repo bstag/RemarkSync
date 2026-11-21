@@ -37,7 +37,6 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from .backup import DocItem, PageRef
 from .rmdata import PageModel
@@ -59,9 +58,6 @@ class PageSource:
     doc: DocItem
     page: PageRef
     model: PageModel
-
-
-Extractor = Callable[[PageSource], str]
 
 
 # ---------------------------------------------------------- tablet conversions
@@ -109,9 +105,9 @@ def conversion_signature(doc: DocItem) -> str:
 
 
 def _conversion_dir(doc: DocItem) -> Path | None:
-    if doc.doc_dir is None:
+    base = doc.files_root
+    if base is None:
         return None
-    base = doc.doc_dir.parent if doc.uuid else doc.doc_dir
     folder = base / f"{doc.uuid}.textconversion" if doc.uuid else base / ".textconversion"
     return folder if folder.is_dir() else None
 
@@ -461,6 +457,10 @@ class TrOCRModel:
         self._model = None
         self.device = "cpu"
 
+    @property
+    def loaded(self) -> bool:
+        return self._model is not None
+
     def _load(self) -> None:
         import torch
         import transformers
@@ -503,7 +503,13 @@ def trocr_model() -> TrOCRModel:
 
 class TrOCRExtractor:
     """Handwriting on a page as searchable text via TrOCR, cached by stroke
-    hash so each page is read once. Lines come from :mod:`inklines`."""
+    hash so each page is read once. Lines come from :mod:`inklines`.
+
+    A model that cannot be loaded (not downloaded and no network, not enough
+    memory) fails the same way for every page, and each attempt is slow. One
+    such failure trips a breaker that skips the model for the rest of this
+    extractor's life (one index run); the next run tries again.
+    """
 
     engine = ENGINE_TROCR
 
@@ -511,6 +517,7 @@ class TrOCRExtractor:
         self.cache = cache
         self.model = model
         self.min_strokes = min_strokes  # skip lines that are just a dot or a tick
+        self.tripped: str | None = None  # why the model was switched off
 
     def __call__(self, source: PageSource) -> str:
         from .inklines import cut_lines, render_line
@@ -522,13 +529,20 @@ class TrOCRExtractor:
         cached = self.cache.get(key, self.engine)
         if cached is not None:
             return "" if cached == FAILED else cached
+        if self.tripped:
+            return ""
         lines = [ln for ln in cut_lines(model) if len(ln.strokes) >= self.min_strokes]
         if not lines:
             return ""
+        reader = self.model or trocr_model()
         try:
-            readings = (self.model or trocr_model()).read_lines([render_line(ln) for ln in lines])
+            readings = reader.read_lines([render_line(ln) for ln in lines])
         except Exception as exc:
-            log.warning("TrOCR failed for %s page %d: %s", source.doc.name, source.page.index, exc)
+            if getattr(reader, "loaded", True):
+                log.warning("TrOCR failed for %s page %d: %s", source.doc.name, source.page.index, exc)
+            else:
+                log.warning("TrOCR could not be loaded; handwriting is skipped for the rest of this run: %s", exc)
+                self.tripped = str(exc)
             return ""
         top = "\n".join(t for t, _ in readings if t)
         alternatives = sorted({a for _, alts in readings for a in alts})
@@ -539,10 +553,6 @@ class TrOCRExtractor:
 
 ENGINES = {ENGINE_TROCR: (lambda: trocr_available(), lambda cache: TrOCRExtractor(cache)),
            ENGINE_WINDOWS: (lambda: windows_ink_available(), lambda cache: WindowsInkExtractor(cache))}
-
-
-def available_engines() -> list[str]:
-    return [name for name, (ok, _) in ENGINES.items() if ok()]
 
 
 def handwriting_extractor(cache: RecognitionCache, engine: str | None = None):

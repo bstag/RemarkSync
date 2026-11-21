@@ -31,20 +31,20 @@ import zipfile
 from dataclasses import dataclass, fields, is_dataclass
 from pathlib import Path
 
-from rmscene import CrdtId, LwwValue, read_blocks, write_blocks
+from rmscene import CrdtId, read_blocks, write_blocks
 from rmscene import scene_items as si
 from rmscene.crdt_sequence import CrdtSequence, CrdtSequenceItem
 from rmscene.scene_stream import PageInfoBlock, RootTextBlock, SceneInfo, TreeNodeBlock, UnreadableBlock
 from rmscene.text import TextDocument
 
 from . import rmformat
-from .backup import DocItem
-from .mdcompile import STYLE_CODE_BY_NAME, page_rm_bytes
-from .rmdata import V5_HEADER, _paragraphs
+from .backup import DocItem, active_cpages
+from .mdcompile import STYLE_CODE_BY_NAME, page_rm_bytes, paragraph_styles
+from .rmdata import HEADER_SIZE, V5_HEADER, _paragraphs
 
 rmformat.install()
 
-_HEADER = 43  # the v6 magic; blocks follow, each a uint32 length and a 4-byte header
+_HEADER = HEADER_SIZE  # the v6 magic; blocks follow, each a uint32 length and a 4-byte header
 _ROOT_TEXT = 0x07
 # The author RemarkSync signs page-list edits with, so they are told apart
 # from the tablet's own and never reuse one of its timestamps.
@@ -57,13 +57,12 @@ class EditError(ValueError):
 
 # ------------------------------------------------------------- text <-> lines
 
-_STYLE_MARKS = [  # longest marker first so "- [ ] " is not read as a bullet
-    ("CHECKBOX2", "  - [ ] "), ("CHECKBOX_CHECKED", "- [x] "), ("CHECKBOX", "- [ ] "),
-    ("BULLET2", "  - "), ("BULLET", "- "), ("NUMBERED2", "   1. "), ("NUMBERED", "1. "),
-    ("BOLD", "### "), ("SUBHEADING", "## "), ("HEADING", "# "),
-]
-_MARK_BY_STYLE = dict(_STYLE_MARKS)
-_PARSE = [
+_MARK_BY_STYLE = {
+    "CHECKBOX2": "  - [ ] ", "CHECKBOX_CHECKED": "- [x] ", "CHECKBOX": "- [ ] ",
+    "BULLET2": "  - ", "BULLET": "- ", "NUMBERED2": "   1. ", "NUMBERED": "1. ",
+    "BOLD": "### ", "SUBHEADING": "## ", "HEADING": "# ",
+}
+_PARSE = [  # tried in order: the longer marker first, so "- [ ] " is not read as a bullet
     ("CHECKBOX2", re.compile(r"^\s{2,}- \[[ xX]\] (.*)$")), ("CHECKBOX_CHECKED", re.compile(r"^- \[[xX]\] (.*)$")),
     ("CHECKBOX", re.compile(r"^- \[ \] (.*)$")), ("BULLET2", re.compile(r"^\s{2,}- (.*)$")),
     ("BULLET", re.compile(r"^- (.*)$")), ("NUMBERED2", re.compile(r"^\s{2,}\d+[.)] (.*)$")),
@@ -155,7 +154,7 @@ class _Scene:
 
 def _read_scene(data: bytes) -> _Scene:
     """Parse a page for text editing, or raise EditError saying why not."""
-    if data[:33] == V5_HEADER:
+    if data.startswith(V5_HEADER):
         raise EditError("this page is in the older (software 2.x) format")
     try:
         blocks = list(read_blocks(io.BytesIO(data)))
@@ -192,14 +191,7 @@ def replace_page_text(data: bytes, paragraphs: list[tuple[str, str]]) -> bytes:
     old: RootTextBlock = scene.blocks[scene.text_at]
     text = "\n".join(t for _, t in paragraphs)
     first = max(_highest_counter(b) for b in scene.blocks) + 2
-    styles, stamp, offset = {}, first + len(text) + 1, 0
-    for k, (style, t) in enumerate(paragraphs):
-        code = STYLE_CODE_BY_NAME.get(style, 1)
-        if code != 1 or k == 0:
-            key = CrdtId(0, 0) if k == 0 else CrdtId(1, first + offset - 1)
-            styles[key] = LwwValue(timestamp=CrdtId(1, stamp), value=si.ParagraphStyle(code))
-            stamp += 1
-        offset += len(t) + 1
+    styles = paragraph_styles(paragraphs, first)
     new = RootTextBlock(block_id=old.block_id, value=si.Text(
         items=CrdtSequence([CrdtSequenceItem(item_id=CrdtId(1, first), left_id=CrdtId(0, 0), right_id=CrdtId(0, 0),
                                              deleted_length=0, value=text)]),
@@ -248,6 +240,19 @@ class DraftPage:
         return self.text != self.original
 
 
+def _stamps(value):
+    """Every "author:counter" timestamp string anywhere in a page list."""
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            if key == "timestamp" and isinstance(inner, str):
+                yield inner
+            else:
+                yield from _stamps(inner)
+    elif isinstance(value, list):
+        for inner in value:
+            yield from _stamps(inner)
+
+
 def _order_key(index: int) -> str:
     """Page order keys only have to sort; three letters is room for 17,576 pages."""
     return "b" + "".join(chr(97 + (index // 26 ** p) % 26) for p in (2, 1, 0))
@@ -271,10 +276,7 @@ class Draft:
             raise EditError("only notebooks can be edited; an annotated PDF or EPUB keeps its pages tied to its base document")
         if not isinstance(pages, list) or not pages or not all(isinstance(p, dict) and p.get("id") for p in pages):
             raise EditError("this notebook uses an older page list that RemarkSync does not edit")
-        active = [p for p in pages if not (p.get("deleted") or {}).get("value")]
-        if all(isinstance((p.get("idx") or {}).get("value"), str) for p in active):
-            active.sort(key=lambda p: p["idx"]["value"])
-        self._original = [str(p["id"]) for p in active]
+        self._original = [str(p["id"]) for p in active_cpages(self.content)]
         self.pages = [self._load(pid) for pid in self._original]
 
     @classmethod
@@ -282,7 +284,7 @@ class Draft:
         """Read a document's files from where it lies: a library or an opened archive."""
         if not doc.uuid or doc.doc_dir is None:
             raise EditError("this document has no identity to edit under")
-        base = doc.doc_dir.parent if doc.doc_dir.name == doc.uuid else doc.doc_dir
+        base = doc.files_root
         files = {p.name: p.read_bytes() for p in base.glob(doc.uuid + ".*") if p.is_file()}
         folder = base / doc.uuid
         if folder.is_dir():
@@ -384,7 +386,11 @@ class Draft:
             if mine is None:
                 mine = max([a.get("second", 0) for a in authors] + [0]) + 1
                 authors.append({"first": AUTHOR, "second": mine})
-            counter = max([int(c) for a, c in re.findall(r'"timestamp": "(\d+):(\d+)"', json.dumps(cpages)) if int(a) == mine] + [0])
+            counter = 0
+            for text in _stamps(cpages):
+                if m := re.fullmatch(r"(\d+):(\d+)", text):
+                    if int(m.group(1)) == mine:
+                        counter = max(counter, int(m.group(2)))
 
             def stamp(value):
                 nonlocal counter

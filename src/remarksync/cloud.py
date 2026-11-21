@@ -24,24 +24,17 @@ import urllib.request
 import uuid
 import zipfile
 
+from .store import HASH, MAX_ARTIFACT as LIMIT, MAX_ENTRIES, CloudError, NoRedirect, copy_hashed, exclusive
+from .store import digest as _digest
+
 PAIR_URL = "https://my.remarkable.com/device/browser/connect"
 CLIENT = Path(__file__).resolve().parents[2] / ".tools" / "rmapi" / ("rmapi.exe" if os.name == "nt" else "rmapi")
-HASH = re.compile(r"[0-9a-f]{64}\Z")
-LIMIT = 8 * 1024**3
-
-
-class CloudError(RuntimeError):
-    pass
-
-
-def _digest(path: Path) -> str:
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+ACCOUNT_BUSY = "Another RemarkSync cloud operation is using this account. Wait for it to finish, then try again."
 
 
 def _dpapi(data: bytes, *, decrypt: bool = False) -> bytes:
     if os.name != "nt":
-        raise CloudError("The cloud trial currently requires Windows token protection.")
+        raise CloudError("Windows token protection (DPAPI) is only available on Windows.")
 
     class Blob(ctypes.Structure):
         _fields_ = [("size", ctypes.c_uint32), ("data", ctypes.POINTER(ctypes.c_ubyte))]
@@ -137,9 +130,28 @@ def _listed_documents(output: bytes, documents: dict[str, dict], *, pairing: boo
     return result
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise CloudError("Cloud blob redirected unexpectedly; refusing to forward credentials.")
+class _NoRedirect(NoRedirect):
+    message = "Cloud blob redirected unexpectedly; refusing to forward credentials."
+
+
+_MEMBER = re.compile(r"[A-Za-z0-9_.-]+\Z")
+_RESERVED = re.compile(r"(?i)(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\..*)?\Z")
+
+
+def _member_inside(name: str, identifier: str) -> bool:
+    """Whether an archive member is one of this document's files: ``<id>.*`` at
+    the top level or anything under ``<id>/``. No sibling document's file is."""
+    parts = name.split("/")
+    return (len(parts) == 1 and name.startswith(identifier + ".")) or (len(parts) > 1 and parts[0] == identifier)
+
+
+def _member_safe(name: str) -> bool:
+    """Whether every part of a member's path is a plain filename on every
+    platform: ASCII letters, digits and ``_ . -`` only (so no backslash, space,
+    control or non-ASCII character), not ``.``/``..``, no trailing dot, and not
+    a reserved Windows device name."""
+    return not any(not _MEMBER.match(part) or part in (".", "..") or part.endswith(".") or _RESERVED.match(part)
+                   for part in name.split("/"))
 
 
 class CloudClient:
@@ -195,8 +207,7 @@ class CloudClient:
             raise CloudError("Pair your account first using Cloud sync… or remarksync cloud pair.")
         _private_profile(self.profile)
         # Lock covers token renewal and pairing across CLI/GUI processes.
-        from .backupstore import writer_lock
-        with writer_lock(self.profile):
+        with exclusive(self.profile, ACCOUNT_BUSY):
             session_root = self.profile
             if os.name != "nt":
                 from .cloudcredentials import private_directory, read_private
@@ -278,7 +289,7 @@ class CloudClient:
             raise CloudError("Cloud file count differs from the document index.")
         names = [item["DocumentID"] for item in files]
         safe_extract_names(names, destination.parent / "validation")
-        if len(files) > 200_000 or len({name.casefold() for name in names}) != len(names):
+        if len(files) > MAX_ENTRIES or len({name.casefold() for name in names}) != len(names):
             raise CloudError("Cloud manifest has duplicate/excessive file entries.")
         identifier = entry["DocumentID"]
         if (f"{identifier}.metadata" not in names or (entry["Metadata"].get("type") == "DocumentType"
@@ -287,14 +298,10 @@ class CloudClient:
         # Only this document's files are allowed; no sibling document injection.
         for item in files:
             name = item["DocumentID"]
-            if not (name.startswith(identifier + ".") and "/" not in name) and not name.startswith(identifier + "/"):
+            if not _member_inside(name, identifier):
                 raise CloudError("Cloud file belongs to a different document.")
-            if ("\\" in name or any(ord(c) < 32 for c in name) or not name.isascii()
-                    or any(part.endswith((".", " ")) for part in name.split("/"))
-                    or any(not re.fullmatch(r"[A-Za-z0-9_.-]+", part) or part in (".", "..")
-                           or re.fullmatch(r"(?i)(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\..*)?", part)
-                           for part in name.split("/"))
-                    or not HASH.fullmatch(item["Hash"]) or not isinstance(item["Size"], int) or item["Size"] < 0):
+            if (not _member_safe(name) or not HASH.fullmatch(item["Hash"])
+                    or not isinstance(item["Size"], int) or item["Size"] < 0):
                 raise CloudError("Invalid cloud file manifest entry.")
         if sum(item["Size"] for item in files) > LIMIT:
             raise CloudError("Cloud document exceeds the archive size limit.")
@@ -307,15 +314,11 @@ class CloudClient:
                     request = urllib.request.Request("https://internal.cloud.remarkable.com/sync/v3/files/" + item["Hash"],
                                                      headers={"Authorization": "Bearer " + token, "rm-filename": item["DocumentID"],
                                                               "User-Agent": "rmapi"})
-                    digest, size = hashlib.sha256(), 0
                     with opener.open(request, timeout=60) as response, archive.open(item["DocumentID"], "w", force_zip64=True) as out:
-                        while chunk := response.read(1024 * 1024):
-                            size += len(chunk)
-                            if size > item["Size"]:
-                                raise CloudError("Cloud file exceeded its declared size.")
-                            digest.update(chunk)
-                            out.write(chunk)
-                    if size != item["Size"] or digest.hexdigest() != item["Hash"]:
+                        size, checksum = copy_hashed(response, out, item["Size"])
+                    if size > item["Size"]:
+                        raise CloudError("Cloud file exceeded its declared size.")
+                    if size != item["Size"] or checksum != item["Hash"]:
                         raise CloudError("Cloud file checksum/size mismatch; refusing to publish.")
         except Exception:
             if created:
@@ -375,10 +378,6 @@ def trial(client: CloudClient, identifier: str, destination: Path) -> dict:
 
 # ------------------------------------------------------------------- sending
 
-_MEMBER = re.compile(r"[A-Za-z0-9_.-]+\Z")
-_RESERVED = re.compile(r"(?i)(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\..*)?\Z")
-
-
 def archive_files(archive: Path) -> tuple[str, dict[str, str]]:
     """Validate an archive for sending; its document id and each member's SHA-256.
 
@@ -390,7 +389,7 @@ def archive_files(archive: Path) -> tuple[str, dict[str, str]]:
         with zipfile.ZipFile(archive) as bundle:
             entries = bundle.infolist()
             names = [entry.filename for entry in entries]
-            if not names or len(names) > 200_000 or len({name.casefold() for name in names}) != len(names):
+            if not names or len(names) > MAX_ENTRIES or len({name.casefold() for name in names}) != len(names):
                 raise CloudError("Archive has no files or duplicate/excessive entries.")
             if sum(entry.file_size for entry in entries) > LIMIT:
                 raise CloudError("Archive exceeds the size limit.")
@@ -407,10 +406,7 @@ def archive_files(archive: Path) -> tuple[str, dict[str, str]]:
             hashes = {}
             for entry in entries:
                 name = entry.filename
-                parts = name.split("/")
-                inside = (len(parts) == 1 and name.startswith(identifier + ".")) or (len(parts) > 1 and parts[0] == identifier)
-                if (not inside or entry.is_dir() or any(not _MEMBER.match(part) or part in (".", "..")
-                                                         or part.endswith(".") or _RESERVED.match(part) for part in parts)):
+                if not _member_inside(name, identifier) or entry.is_dir() or not _member_safe(name):
                     raise CloudError("Archive holds a file that does not belong to its document.")
                 with bundle.open(entry) as stream:
                     hashes[name] = hashlib.file_digest(stream, "sha256").hexdigest()

@@ -32,14 +32,14 @@ the export cannot name no longer reads as agreement it has not earned.
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
 from .exported import compare, drawn_lines
+from .paths import work_dir
 from .tablet import document_id, export_pdf, upload as post_archive
 
-WORK = Path(os.environ.get("REMARKSYNC_ROUNDTRIP", str(Path(os.environ["TEMP"]) / "rs-roundtrip")))
+WORK = work_dir("REMARKSYNC_ROUNDTRIP", "rs-roundtrip")
 TITLE = "RemarkSync compile test"
 SOURCE = Path(__file__).with_name("compile_fixture.md")
 ARCHIVE = WORK / "remarksync-compile-test.rmdoc"

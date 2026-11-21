@@ -1,38 +1,41 @@
 """Cloud polling controls. Network and MuPDF work run in a child process."""
-import json
-import os
 from pathlib import Path
 import sys
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, QSettings, QTimer, QUrl, Qt, Signal
+from PySide6.QtCore import QSettings, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QDialog, QLabel, QLineEdit, QPushButton, QSpinBox, QVBoxLayout
 
 from .cloud import CloudClient, PAIR_URL
+from .cloudsync import DEFAULT_DESTINATION
 from .serversync import DEFAULT_DESTINATION as SERVER_DESTINATION, default_server
+from .workerprocess import start_json_worker
 
-DEFAULT_DESTINATION = Path(__file__).resolve().parents[2] / "output" / "cloud-sync"
+
+def sync_settings() -> QSettings:
+    """Where the sync preferences live; the main window reads ``automatic`` from here too."""
+    return QSettings("RemarkSync", "CloudSync")
 
 
 class CloudSyncDialog(QDialog):
     library_requested = Signal(str)
     synced = Signal(str)
 
-    def __init__(self, parent=None, destination: Path = DEFAULT_DESTINATION, *, automatic: bool | None = None,
+    def __init__(self, parent=None, destination: Path | None = None, *, automatic: bool | None = None,
                  settings=None, source: str | None = None, server: str | None = None):
+        """``destination`` None means "not given": the saved folder for the
+        chosen source is used. A path replaces that saved folder."""
         super().__init__(parent)
         self.setWindowTitle("RemarkSync — Cloud sync")
         self.resize(680, 460)
-        self.settings = settings or QSettings("RemarkSync", "CloudSync")
+        self.settings = settings or sync_settings()
         chosen = source or self.settings.value("source", "cloud")
         self.destinations = {"cloud": Path(self.settings.value("destination", str(DEFAULT_DESTINATION))).resolve(),
                              "server": Path(self.settings.value("server_destination", str(SERVER_DESTINATION))).resolve()}
-        if destination != DEFAULT_DESTINATION:
+        if destination is not None:
             self.destinations[chosen] = Path(destination).resolve()
         self.destination = self.destinations[chosen]
         self.process = None
-        self.buffer = b""
-        self.result = None
         self.failures = 0
         self.operation = None
         self.timer = QTimer(self)
@@ -80,10 +83,8 @@ class CloudSyncDialog(QDialog):
         layout.addWidget(self.sync_button)
         self.open_library = QPushButton("Open downloaded library")
         self.open_library.clicked.connect(self.show_library)
-        self.open_library.setEnabled((self.destination / "raw").is_dir())
         layout.addWidget(self.open_library)
         self.open_exports = QPushButton("Open preservation PDFs")
-        self.open_exports.setEnabled((self.destination / "preservation.html").is_file())
         self.open_exports.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.destination / "preservation.html"))))
         layout.addWidget(self.open_exports)
         self.status = QLabel()
@@ -114,10 +115,17 @@ class CloudSyncDialog(QDialog):
         self.status.setText("Ready to download from the private server. Connect Tailscale first." if central else
                             ("Account paired. Ready to sync." if CloudClient().paired else "Pair your account before syncing."))
         self.location.setText(f"Downloaded library and preservation revisions: {self.destination}")
-        self.open_library.setEnabled((self.destination / "raw").is_dir())
-        self.open_exports.setEnabled((self.destination / "preservation.html").is_file())
+        self._update_open_buttons()
         if self.auto.isChecked():
             self.timer.start(0)
+
+    def _update_open_buttons(self):
+        self.open_library.setEnabled((self.destination / "raw").is_dir())
+        self.open_exports.setEnabled((self.destination / "preservation.html").is_file())
+
+    def _set_controls_enabled(self, enabled):
+        for widget in (self.pair, self.sync_button, self.code, self.pdfs_only, self.source, self.server_address):
+            widget.setEnabled(enabled)
 
     def pair_account(self):
         code = self.code.text().strip()
@@ -159,46 +167,22 @@ class CloudSyncDialog(QDialog):
             return
         self.timer.stop()
         self.operation = request["operation"]
-        self.buffer, self.result = b"", None
-        for widget in (self.pair, self.sync_button, self.code, self.pdfs_only, self.source, self.server_address):
-            widget.setEnabled(False)
+        self._set_controls_enabled(False)
         self.open_library.setEnabled(False)
         self.open_exports.setEnabled(False)
         self.status.setText("Checking the central library…" if self.operation == "server-sync" else "Checking the cloud library…")
-        process = QProcess(self)
-        env = QProcessEnvironment.systemEnvironment()
-        env.insert("PYTHONPATH", os.pathsep.join(str(path) for path in sys.path if path))
-        process.setProcessEnvironment(env)
-        process.readyReadStandardOutput.connect(lambda: self.read_output(process))
-        process.finished.connect(lambda code, _status: self.finished_operation(process, code))
-        process.errorOccurred.connect(lambda error: self.finished_operation(process, 1) if error == QProcess.FailedToStart else None)
-        self.process = process
-        process.start(sys.executable, ["-m", "remarksync.cloud_worker"])
-        process.write(json.dumps(request).encode("utf-8"))
-        process.closeWriteChannel()
+        self.process = start_json_worker(self, "remarksync.cloud_worker", request, self.finished_operation, self.progress_event)
 
-    def read_output(self, process):
-        self.buffer += bytes(process.readAllStandardOutput())
-        while b"\n" in self.buffer:
-            line, self.buffer = self.buffer.split(b"\n", 1)
-            try:
-                event = json.loads(line.decode("utf-8"))
-            except (ValueError, UnicodeError):
-                continue
-            if event.get("event") == "progress":
-                self.status.setText(f"{event['done'] + 1}/{event['total']}: {event['name']}")
-            else:
-                self.result = event
+    def progress_event(self, event):
+        if event.get("event") == "progress":
+            self.status.setText(f"{event['done'] + 1}/{event['total']}: {event['name']}")
 
-    def finished_operation(self, process, code):
+    def finished_operation(self, process, result, code):
         if self.process is not process:
             return
-        self.read_output(process)
-        result = self.result or {"error": "Cloud worker stopped unexpectedly. Earlier files were retained."}
+        result = result or {"error": "Cloud worker stopped unexpectedly. Earlier files were retained."}
         self.process = None
-        process.deleteLater()
-        for widget in (self.pair, self.sync_button, self.code, self.pdfs_only, self.source, self.server_address):
-            widget.setEnabled(True)
+        self._set_controls_enabled(True)
         if code or "error" in result:
             self.failures = min(self.failures + 1, 4)
             self.status.setText(result.get("error", "Cloud operation failed."))
@@ -221,8 +205,7 @@ class CloudSyncDialog(QDialog):
                 message += f" Last full success: {result['last_success']}."
             self.status.setText(message)
             self.synced.emit(result["raw_library"])
-        self.open_library.setEnabled((self.destination / "raw").is_dir())
-        self.open_exports.setEnabled((self.destination / "preservation.html").is_file())
+        self._update_open_buttons()
         self.schedule()
 
     def show_library(self):
@@ -231,11 +214,9 @@ class CloudSyncDialog(QDialog):
             self.library_requested.emit(path)
         else:
             from .gui import MainWindow
-            self.library_window = getattr(self, "library_window", None) or MainWindow(cloud_autostart=False)
-            # Adopt this controller rather than creating a second polling worker.
-            self.library_window._cloud_dialog = self
-            self.library_requested.connect(lambda chosen: self.library_window.open_folder(Path(chosen)))
-            self.synced.connect(self.library_window._cloud_synced)
+            self.library_window = MainWindow(cloud_autostart=False)
+            # The window adopts this controller rather than creating a second polling worker.
+            self.library_window.adopt_sync_dialog(self)
             self.setParent(self.library_window, Qt.Dialog)
             self.library_window.open_folder(Path(path))
             self.library_window.show()
@@ -251,7 +232,8 @@ class CloudSyncDialog(QDialog):
             super().closeEvent(event)
 
 
-def run(destination: Path = DEFAULT_DESTINATION, *, automatic: bool = False, source=None, server=None):
+def run(destination: Path | None = None, *, automatic: bool = False, source=None, server=None):
+    """Show the sync dialog on its own. ``destination`` None keeps the saved folder."""
     app = QApplication.instance() or QApplication(sys.argv)
     dialog = CloudSyncDialog(destination=destination, automatic=True if automatic else None, source=source, server=server)
     dialog.show()

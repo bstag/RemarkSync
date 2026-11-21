@@ -164,3 +164,32 @@ def test_engine_selection_prefers_trocr_and_falls_back(monkeypatch, tmp_path):
     monkeypatch.setattr(rec, "windows_ink_available", lambda: False)
     monkeypatch.setattr(rec, "trocr_available", lambda: False)
     assert rec.handwriting_extractor(cache) is None
+
+
+def test_trocr_that_cannot_load_is_tried_once_per_run(tmp_path, backup_root):
+    from remarksync.recognize import TrOCRExtractor
+
+    class Unloadable:
+        loaded = False
+        calls = 0
+
+        def read_lines(self, images):
+            self.calls += 1
+            raise OSError("model files are not available")
+
+    model = Unloadable()
+    cache = RecognitionCache(tmp_path / "rec.db")
+    extractor = TrOCRExtractor(cache, model=model, min_strokes=1)
+    source = _ink_source(backup_root)
+    assert extractor(source) == "" and extractor(source) == ""
+    assert model.calls == 1 and "not available" in extractor.tripped
+    assert len(cache) == 0  # nothing recorded: the page is read once the model loads
+    assert TrOCRExtractor(cache, model=model, min_strokes=1)(source) == "" and model.calls == 2  # the next run tries again
+
+    class FailsOnOnePage(Unloadable):
+        loaded = True
+
+    flaky = FailsOnOnePage()
+    extractor = TrOCRExtractor(cache, model=flaky, min_strokes=1)
+    assert extractor(source) == "" and extractor(source) == ""
+    assert flaky.calls == 2 and extractor.tripped is None  # a loaded model that fails on a page is not switched off

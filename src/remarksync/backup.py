@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
+from .backupstore import MAX_ARCHIVE_BYTES, MAX_ARCHIVE_ENTRIES, has_unfinished
+
 log = logging.getLogger(__name__)
 
 TEMPLATE_BLANK = "blank"
@@ -70,6 +72,14 @@ class DocItem:
         if self.base_pdf and self.base_pdf.exists():
             return self.base_pdf
         return None
+
+    @property
+    def files_root(self) -> Path | None:
+        """The folder holding this document's ``<uuid>.*`` files: the backup
+        folder for a library document, the extraction folder for an archive."""
+        if self.doc_dir is None:
+            return None
+        return self.doc_dir.parent if self.uuid and self.doc_dir.name == self.uuid else self.doc_dir
 
 
 @dataclass
@@ -120,6 +130,23 @@ def _find_page_rm(pages_dir: Path, page_id: str, index: int, *, positional: bool
     return _first_existing(paths)
 
 
+def active_cpages(content: dict) -> list[dict]:
+    """The pages a software 3.x ``.content`` still has, in the tablet's order.
+
+    Empty when the content has no ``cPages`` list of page records (software 2.x
+    kept a flat list of ids). ``idx.value`` is the tablet's lexicographic order
+    key; with incomplete keys the stored order is kept, since inventing one
+    would mispair ink and pages.
+    """
+    pages = (content.get("cPages") or {}).get("pages")
+    if not isinstance(pages, list) or not pages or not isinstance(pages[0], dict):
+        return []
+    active = [p for p in pages if not (p.get("deleted") or {}).get("value", False)]
+    if active and all(isinstance((p.get("idx") or {}).get("value"), str) for p in active):
+        active.sort(key=lambda p: p["idx"]["value"])
+    return active
+
+
 def _parse_doc(uuid: str, base: Path, meta: dict) -> DocItem:
     """Parse one document. ``base`` is where the metadata files live — the
     the backup folder itself, the extraction dir for .rmdoc."""
@@ -155,12 +182,10 @@ def _parse_doc(uuid: str, base: Path, meta: dict) -> DocItem:
     source_indices: list[int | None] = []
     declared_pages = bool(raw_pages)
     modern_pages = bool(isinstance(raw_pages, list) and raw_pages and isinstance(raw_pages[0], dict))
-    if isinstance(raw_pages, list) and raw_pages and isinstance(raw_pages[0], dict):
-        active = [p for p in raw_pages if not (p.get("deleted") or {}).get("value", False)]
-        # idx.value is the tablet's lexicographic order key. With incomplete
-        # keys keep the stored order; inventing one would mispair ink/pages.
-        if active and all(isinstance((p.get("idx") or {}).get("value"), str) for p in active):
-            active.sort(key=lambda p: p["idx"]["value"])
+    if modern_pages:
+        # raw_pages is cPages.pages here unless that list was missing or empty,
+        # in which case the same record shape was found under ``pages``.
+        active = active_cpages({"cPages": {"pages": raw_pages}})
         page_metadata = active
         page_ids = [str(p.get("id")) for p in active]
         source_indices = [_pdf_index((p.get("redir") or {}).get("value")) for p in active]
@@ -221,7 +246,7 @@ def scan_backup(root: Path) -> list:
     page counts stay truthful.
     """
     root = Path(root)
-    if any((root / ".remarksync-transactions").glob("*.json")):
+    if has_unfinished(root):
         raise RuntimeError("backup has an unfinished pull; finish or recover the pull before opening it")
     folders: dict[str, FolderItem] = {}
     docs: dict[str, DocItem] = {}
@@ -338,7 +363,7 @@ def open_rmdoc(path: Path, extract_dir: Path | None = None) -> DocItem:
     with zipfile.ZipFile(path) as zf:
         safe_extract_names(zf.namelist(), tmp)
         entries = zf.infolist()
-        if len(entries) > 200_000 or sum(e.file_size for e in entries) > 8 * 1024**3:
+        if len(entries) > MAX_ARCHIVE_ENTRIES or sum(e.file_size for e in entries) > MAX_ARCHIVE_BYTES:
             raise ValueError("archive exceeds extraction limits")
         if any(stat.S_ISLNK(e.external_attr >> 16) for e in entries):
             raise ValueError("refusing archive link")

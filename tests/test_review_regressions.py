@@ -311,3 +311,27 @@ def test_archive_never_clears_an_existing_destination(tmp_path):
     with pytest.raises(ValueError, match='empty destination'):
         open_rmdoc(archive, extract_dir=dest)
     assert original.read_text() == 'keep'
+
+
+def test_export_of_an_archive_leaves_no_extraction_behind(tmp_path, monkeypatch):
+    import tempfile
+    from remarksync.__main__ import main
+    from remarksync.mdcompile import markdown_to_rmdoc
+    archive = markdown_to_rmdoc('# Note\n\nsome text\n', 'Note', tmp_path / 'note.rmdoc')
+    scratch = tmp_path / 'temp'
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, 'tempdir', str(scratch))
+    main(['export', str(archive), str(tmp_path / 'out.pdf')])
+    assert not list(scratch.iterdir())
+
+
+def test_pull_command_reports_a_failure_in_one_line(tmp_path, monkeypatch, capsys):
+    import remarksync.pull as module
+    from remarksync.__main__ import main
+
+    def unreachable(self):
+        raise RuntimeError('ssh/tar failed with code 255')
+
+    monkeypatch.setattr(module.SshTablet, 'read_signatures', unreachable)
+    assert main(['pull', str(tmp_path / 'backup')]) == 1
+    assert capsys.readouterr().err.strip() == 'pull failed: ssh/tar failed with code 255'

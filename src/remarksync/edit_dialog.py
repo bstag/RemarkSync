@@ -7,21 +7,24 @@ every other cloud operation, and only after the user confirms it.
 from __future__ import annotations
 
 import hashlib
-import json
-import os
 import re
-import sys
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Qt, Signal
+from PySide6.QtCore import QObject, QProcess, Qt, Signal
 from PySide6.QtWidgets import (QDialog, QFileDialog, QHBoxLayout, QInputDialog, QLabel, QListWidget, QMessageBox,
                                QPlainTextEdit, QPushButton, QVBoxLayout)
 
 from .rmedit import Draft, EditError
+from .workerprocess import start_json_worker
 
 SENT = Path(__file__).resolve().parents[2] / "output" / "sent"
 HELP = ("One line per paragraph.  # Heading   ## Subheading   ### Bold   - bullet   1. numbered   "
         "- [ ] checkbox   - [x] ticked   (two spaces before a marker nests it)")
+
+
+def safe_filename(name: str) -> str:
+    """A document name as a file name Windows accepts."""
+    return re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(" .") or "Document"
 
 
 def keep_archive(data: bytes, root: Path = SENT) -> Path:
@@ -50,28 +53,17 @@ class Sender(QObject):
     def send(self, archive: Path, name: str, *, replace: dict[str, str] | None = None, root: Path = SENT) -> None:
         if self.busy:
             return
-        process = QProcess(self)
-        env = QProcessEnvironment.systemEnvironment()
-        env.insert("PYTHONPATH", os.pathsep.join(str(path) for path in sys.path if path))
-        process.setProcessEnvironment(env)
-        process.finished.connect(lambda code, _status: self._done(process))
-        process.errorOccurred.connect(lambda error: self._done(process) if error == QProcess.FailedToStart else None)
-        self.process = process
-        process.start(sys.executable, ["-m", "remarksync.cloud_worker"])
-        process.write(json.dumps({"operation": "send", "archive": str(archive), "name": name, "replace": replace,
-                                  "keep": str(root / "replaced")}).encode("utf-8"))
-        process.closeWriteChannel()
+        self.process = start_json_worker(
+            self, "remarksync.cloud_worker",
+            {"operation": "send", "archive": str(archive), "name": name, "replace": replace, "keep": str(root / "replaced")},
+            self._done)
 
-    def _done(self, process: QProcess) -> None:
+    def _done(self, process: QProcess, result: dict | None, _code: int) -> None:
         if self.process is not process:
             return
-        try:
-            result = json.loads(bytes(process.readAllStandardOutput()).decode("utf-8").strip().splitlines()[-1])
-        except (ValueError, UnicodeError, IndexError):
-            result = {"error": "The cloud worker stopped unexpectedly. Send again: an upload that did arrive is recognised."}
         self.process = None
-        process.deleteLater()
-        self.finished.emit(result)
+        self.finished.emit(result or {
+            "error": "The cloud worker stopped unexpectedly. Send again: an upload that did arrive is recognised."})
 
 
 def describe(result: dict) -> str:
@@ -95,6 +87,8 @@ class EditDialog(QDialog):
         self.sender_ = Sender(self)
         self.sender_.finished.connect(self._sent)
         self._replaced = False
+        self._replacing = False
+        self._unsaved = False  # edits made since the draft was last saved or sent
         self._loading = False
 
         outer = QVBoxLayout(self)
@@ -172,7 +166,11 @@ class EditDialog(QDialog):
         if self._loading or row < 0 or self.draft.pages[row].locked:
             return
         self.draft.set_text(row, self.editor.toPlainText())
+        self._edited()
         self._update_buttons()
+
+    def _edited(self) -> None:
+        self._unsaved = self.draft.changed
 
     def _update_buttons(self) -> None:
         busy = self.sender_.busy
@@ -189,17 +187,20 @@ class EditDialog(QDialog):
         row, to = self.page_list.currentRow(), self.page_list.currentRow() + by
         if 0 <= row and 0 <= to < len(self.draft.pages):
             self.draft.move(row, to)
+            self._edited()
             self._refill(to)
 
     def _duplicate(self) -> None:
         row = self.page_list.currentRow()
         if row >= 0:
             self.draft.duplicate(row)
+            self._edited()
             self._refill(row + 1)
 
     def _add(self) -> None:
         row = self.page_list.currentRow()
         self.draft.add_page(row)
+        self._edited()
         self._refill(row + 1)
 
     def _delete(self) -> None:
@@ -209,6 +210,7 @@ class EditDialog(QDialog):
         except (EditError, IndexError) as exc:
             self.status.setText(str(exc))
             return
+        self._edited()
         self._refill(row)
 
     # ------------------------------------------------------------- save / send
@@ -221,14 +223,15 @@ class EditDialog(QDialog):
             return None
 
     def save_as(self) -> None:
-        name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", self.draft.name).strip(" .") or "Document"
-        chosen, _ = QFileDialog.getSaveFileName(self, "Save edited copy as", f"{name} (edited).rmdoc",
+        chosen, _ = QFileDialog.getSaveFileName(self, "Save edited copy as",
+                                                f"{safe_filename(self.draft.name)} (edited).rmdoc",
                                                 "reMarkable document (*.rmdoc)")
         if not chosen:
             return
         data = self._build(new_identity=True, name=Path(chosen).stem)
         if data is not None:
             Path(chosen).write_bytes(data)
+            self._unsaved = False
             self.status.setText(f"Saved {chosen}. It imports as a new document, separate from the original.")
 
     def send_copy(self) -> None:
@@ -266,14 +269,35 @@ class EditDialog(QDialog):
         self._update_buttons()
 
     def _sent(self, result: dict) -> None:
-        if "error" not in result and getattr(self, "_replacing", False):
-            self._replaced = True
+        if "error" not in result:
+            self._unsaved = False
+            if self._replacing:
+                self._replaced = True
         self.status.setText(describe(result))
         self._update_buttons()
 
-    def closeEvent(self, event) -> None:  # noqa: N802
+    # ---------------------------------------------------------------- closing
+
+    def _may_close(self) -> bool:
+        """Closing abandons a running send and throws the draft away, so a
+        send must finish first and unsaved edits are only dropped on a yes."""
         if self.sender_.busy:
             self.status.setText("Wait for the send to finish before closing.")
+            return False
+        if self._unsaved and QMessageBox.question(
+                self, "Discard edits", f"Close without saving or sending your edits to '{self.draft.name}'?\n\n"
+                "They are not kept anywhere else.") != QMessageBox.Yes:
+            return False
+        return True
+
+    def reject(self) -> None:
+        # Esc arrives here without a close event, and so does the close
+        # button: QDialog turns a visible dialog's close into reject().
+        if self._may_close():
+            super().reject()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        if not self.isVisible() and self.sender_.busy:  # a hidden dialog is not asked through reject()
             event.ignore()
         else:
             super().closeEvent(event)

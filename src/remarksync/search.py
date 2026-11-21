@@ -69,6 +69,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
 
 Extractor = Callable[[PageSource], str]
 # progress(doc_name) -> keep going? Returning False stops the refresh.
+# A progress object may also have a ``cancelled()`` method; it is asked between
+# the pages of a document, so one long document does not hold up a stop.
 Progress = Callable[[str], bool | None]
 
 
@@ -103,6 +105,10 @@ class PageDecodeError(ValueError):
     pass
 
 
+class _Cancelled(Exception):
+    """Raised between pages to abandon the document being indexed."""
+
+
 class SearchIndex:
     """An FTS5 index stored at ``path``. Nothing is created until the first
     refresh, so ``exists`` says whether a library has ever been indexed."""
@@ -130,9 +136,12 @@ class SearchIndex:
 
         ``progress`` is called with a document's name after it is indexed;
         returning ``False`` stops early (documents already done stay
-        indexed) and the report says so.
+        indexed) and the report says so. If it has a ``cancelled()`` method
+        that turns true, the document in hand is abandoned between pages: it
+        keeps the text it had and is read again by the next refresh.
         """
         report = IndexReport()
+        cancelled = getattr(progress, "cancelled", None)
         current = {d.uuid: d for d in docs}
         conn = self._connect()
         try:
@@ -157,9 +166,12 @@ class SearchIndex:
                         continue
                     with conn:  # failure rolls back to the document's last good text
                         self._delete_doc(conn, doc.uuid)
-                        pages = self._insert_doc(conn, doc, signature)
+                        pages = self._insert_doc(conn, doc, signature, cancelled)
                     report.pages += pages
                     report.indexed += 1
+                except _Cancelled:
+                    report.completed = False
+                    break
                 except (OSError, PageDecodeError) as exc:
                     report.failed += 1
                     report.errors.append(f"{doc.name}: {exc}")
@@ -180,7 +192,8 @@ class SearchIndex:
         visible to the next refresh."""
         return "v2|" + "|".join(_extractor_name(ex) for ex in self.extractors)
 
-    def _insert_doc(self, conn: sqlite3.Connection, doc: DocItem, signature: str) -> int:
+    def _insert_doc(self, conn: sqlite3.Connection, doc: DocItem, signature: str,
+                    cancelled: Callable[[], bool] | None = None) -> int:
         conn.execute(
             "INSERT OR REPLACE INTO docs (uuid, name, file_type, page_count, last_modified, signature) "
             "VALUES (?,?,?,?,?,?)",
@@ -188,6 +201,8 @@ class SearchIndex:
         )
         count = 0
         for page in doc.pages:
+            if cancelled is not None and cancelled():
+                raise _Cancelled
             model = decode_page(page.rm_path) if page.rm_path is not None else PageModel()
             if model.error:
                 raise PageDecodeError(f"page {page.index + 1}: {model.error}")

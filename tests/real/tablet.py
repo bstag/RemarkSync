@@ -15,13 +15,12 @@ from __future__ import annotations
 
 import json
 import mimetypes
-import os
 import urllib.error
 import urllib.request
 import uuid as uuidlib
 from pathlib import Path
 
-HOST = os.environ.get("REMARKSYNC_TABLET", "10.11.99.1")
+from .paths import HOST
 
 
 def upload(archive: Path, host: str = HOST, timeout: int = 300) -> str:

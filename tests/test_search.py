@@ -193,3 +193,27 @@ def test_refresh_upgrades_an_index_written_before_signatures(backup_root, tmp_pa
     report = index.refresh(_docs(backup_root))
     assert report.indexed >= 1
     assert index.query("quantum")  # the old row was re-read, not trusted
+
+
+def test_cancelling_between_pages_abandons_the_document_in_hand(backup_root, tmp_path):
+    """A stop request does not wait for a long document: the document being
+    read keeps what it had and is picked up by the next refresh."""
+    index = SearchIndex(tmp_path / "index.db")
+
+    class StopAtOnce:
+        seen = []
+
+        def __call__(self, name):
+            self.seen.append(name)
+
+        def cancelled(self):
+            return True
+
+    progress = StopAtOnce()
+    report = index.refresh(_docs(backup_root), progress=progress)
+    assert not report.completed
+    assert report.indexed == 0 and report.failed == 0 and progress.seen == []
+    assert not index.query("flux capacitor")
+    rest = index.refresh(_docs(backup_root))
+    assert rest.completed and rest.indexed == 4
+    assert index.query("flux capacitor")

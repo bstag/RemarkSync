@@ -20,6 +20,7 @@ $env:REMARKSYNC_DESKTOP_STORE = "$env:APPDATA\remarkable\desktop"
 | `test_device_pdf_parity.py` | Compares canvas bounds against cached tablet PDF exports; missing exports skip |
 | `test_pdf_preservation.py` | Checks real base PDF text and raw scene/original attachments in preservation output |
 | `oracle.py`, `exported.py`, `fixture.py` | Shared render/measurement/compiler helpers; keep |
+| `paths.py` | The backup, desktop-store, tablet-host and work-directory defaults every helper shares |
 | `compile_fixture.md` | Synthetic Markdown writing fixture; safe to version |
 
 The historical v5 mass discrepancy (median 1.177 versus maximum 1.15) was also
@@ -41,7 +42,7 @@ decoder/layout/text-metric/painter changes, and record prerequisites or skips.
 | `text_width read/wrap` | Reads backup declarations; wrap may fetch a tablet PDF | Keep; column-width calibration |
 | `tablet.py` helpers | `upload` sends a document; `document_id` lists; `export_pdf` downloads | Keep behind explicit manual experiment calls |
 | `scene_json compare` | Offline comparison of existing captured dumps with raw backup | Keep only as historical forensic reader |
-| `scene_json steps` | Former instructions enabled `SCENE_FILE_V6_DEBUG` and restarted xochitl | Retired; refuse to provide live-enablement instructions |
+| `scene_json steps` | Former instructions enabled `SCENE_FILE_V6_DEBUG` and restarted xochitl | Removed; the module no longer has the mode or the instructions |
 
 The September 2026 Paper Pro/software-3.27 compiler round trip verified editable
 text and corrected line-breaking after the wrap-inset/ligature work. These
@@ -62,7 +63,7 @@ local; do not generate it again on a user's live notes to answer a format questi
 private work directories. Some historical helpers default to Windows `TEMP`
 or `APPDATA`, fixed fixture names, or a particular device; review prerequisites
 before running them elsewhere. `REMARKSYNC_WIDTH_DOC` selects the width fixture.
-The retired debug helper's old `REMARKSYNC_TABLET_SSH` setting is historical.
+The retired debug helper's old `REMARKSYNC_TABLET_SSH` setting is no longer read.
 
 Do not run manual upload modes during routine repository verification, packaging
 or cloud acquisition. Downloaded/compiled `.rmdoc`, PDFs, scene bytes and logs

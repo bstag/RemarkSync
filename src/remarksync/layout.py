@@ -35,7 +35,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 from .backup import PageRef
-from .rmdata import PAGE_HEIGHT, PAGE_WIDTH, PageModel, decode_page
+from .rmdata import DEFAULT_PAPER, PAGE_WIDTH, PageModel, decode_page
 
 # Tablet pixels per PDF point when the tablet lays a base PDF out. Fitted
 # on 2026-09-03 from 298 snap-highlight rectangles across three PDFs
@@ -127,10 +127,10 @@ def lay_out(
     for pages that declare nothing. A Paper Pro page is 1620x2160, and one
     notebook can hold pages of either, so this cannot be a constant.
     """
+    sheet = page.paper_size or DEFAULT_PAPER
     if base_size is not None:
-        paper: Rect = base_page_rect(base_size, (page.paper_size or (PAGE_WIDTH, PAGE_HEIGHT))[0])
+        paper: Rect = base_page_rect(base_size, sheet[0])
     else:
-        sheet = page.paper_size or (PAGE_WIDTH, PAGE_HEIGHT)
         paper = (0.0, 0.0, float(sheet[0]), float(sheet[1]))
     px, py, pw, ph = paper
 
@@ -142,7 +142,10 @@ def lay_out(
     x_min = min(px, min(xs) - GROWTH_MARGIN) if xs and min(xs) < px else px
     x_max = max(px + pw, max(xs) + GROWTH_MARGIN) if xs and max(xs) > px + pw else px + pw
     y_max = max(py + ph, max(ys) + GROWTH_MARGIN) if ys and max(ys) > py + ph else py + ph
-    y_min = py  # the top never moves
+    # The top never moves, and every paper starts at y = 0, so y_min, dy and
+    # the top divider below never come into play today. They are kept so the
+    # four edges read alike and a paper placed lower would still be handled.
+    y_min = py
 
     # shift so the canvas starts at zero; avoid -0.0 origins
     dx = -x_min if x_min else 0.0

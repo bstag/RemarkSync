@@ -207,9 +207,16 @@ or login scheduled task was installed. See [settings](settings.md).
 
 ## Validation and known limits
 
-Latest complete checkout suite: **299 passed, 19 skipped** on Windows
-(31.11 seconds). The final backup memory/timeout adjustments also passed their
-focused checks. The new deployed image's Linux suite has **139 passed, two
+Latest complete checkout suite: **382 passed, 19 skipped** on Windows, after the
+2026-11-21 review pass. That pass fixed seven defects (Esc could abandon a running
+send; whole-library backups dropped the removed-from-tablet marks; a busy account
+ended `send` in a traceback; state files were read in the Windows locale encoding;
+the CLI overrode the dialog's saved destination; a failed base PDF left the window
+half-switched; a mid-word line break miscounted characters), removed the unreachable
+trial dialog and other dead code, and gathered duplicated sync and worker-launch
+code into `store.py` and `workerprocess.py`. None of it has had a live run, and the
+deployed server image predates it: the server still runs release
+`20261121-removed-01`, whose Linux suite had **143 passed, two
 Windows-only skips**. Ruff passed across
 `src`, `tests`, `scripts` and `deploy/server`. Real-data/device oracles are opt-in;
 these counts do not mean every current device format has full rendering fidelity.

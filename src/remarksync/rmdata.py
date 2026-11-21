@@ -53,6 +53,7 @@ log = logging.getLogger(__name__)
 # second.
 PAGE_WIDTH = 1404
 PAGE_HEIGHT = 1872
+DEFAULT_PAPER = (PAGE_WIDTH, PAGE_HEIGHT)  # what a page that declares no paper is drawn on
 # The papers we can name, largest last. Typed text sits in the same place on
 # either: a block's pos_y is 234 and its width is one of the same three
 # settings, with pos_x stored relative to the centre so it centres itself.
@@ -106,10 +107,16 @@ PEN_WIDTHS: dict[str, float] = {
 # Pens the tablet blends translucently over the page. The marker is an
 # opaque felt tip and is not one of them.
 TRANSLUCENT_TOOLS = {"HIGHLIGHTER_1", "HIGHLIGHTER_2", "SHADER"}
-HIGHLIGHTER_TOOLS = TRANSLUCENT_TOOLS  # older name
 ERASER_TOOLS = {"ERASER", "ERASER_AREA"}
 # Tint used for translucent pens whose file carries no alpha of its own.
 DEFAULT_TRANSLUCENT_ALPHA = 110 / 255
+# A snap highlight over a base PDF's text, when the file gives no colour or
+# alpha of its own.
+HIGHLIGHT_COLOR = PEN_COLORS["HIGHLIGHT"]
+HIGHLIGHT_ALPHA = 95 / 255
+# Height charged per line of a text block whose paragraphs could not be read,
+# and so could not be laid out.
+FALLBACK_LINE_HEIGHT = 70.0
 
 # Opaque pens the tablet draws lighter than solid ink. Fitted on 2026-09-04
 # by comparing ink mass per pen against the tablet's own PDF export of a
@@ -128,6 +135,9 @@ PEN_OPACITY: dict[str, float] = {
 # extent, and the ribbon it actually lays down carries ~15% less ink.
 PEN_WIDTH_FACTOR: dict[str, float] = {"MARKER_1": 0.85, "MARKER_2": 0.85}
 
+# Both page formats open with a 43-byte magic, space-padded: v6 as
+# "reMarkable .lines file, version=6", v5 as below.
+HEADER_SIZE = 43
 V5_HEADER = b"reMarkable .lines file, version=5"
 V5_COLORS = {0: "BLACK", 1: "GRAY", 2: "WHITE"}
 
@@ -175,7 +185,7 @@ class TextBlock:
     pos_x: float
     pos_y: float
     width: float
-    height: float = 70.0
+    height: float = FALLBACK_LINE_HEIGHT
     paragraphs: list[tuple[str, str]] = field(default_factory=list)  # (style, text)
     lines: list[TextLine] = field(default_factory=list)
     layer_visible: bool = True
@@ -188,8 +198,8 @@ class Highlight:
 
     text: str
     rectangles: list[tuple[float, float, float, float]] = field(default_factory=list)
-    color: str = "#ffd400"
-    alpha: float = 95 / 255
+    color: str = HIGHLIGHT_COLOR
+    alpha: float = HIGHLIGHT_ALPHA
     layer_visible: bool = True
     layer_id: str = ""
 
@@ -230,7 +240,7 @@ def decode_page(source: Path | bytes) -> PageModel:
         except OSError as exc:
             return PageModel(error=f"{Path(source).name} could not be read ({exc})")
 
-    if data[:33] == V5_HEADER:
+    if data.startswith(V5_HEADER):
         return _decode_v5(data)
 
     try:
@@ -337,7 +347,7 @@ def _decode_v6(tree) -> PageModel:
     anchor_pos = _anchor_positions(tree.root_text)
     # x is relative to the centre of *this page's* paper, so a Paper Pro page
     # shifts by 810, not the 702 of the smaller sheet.
-    x_shift = (paper_size[0] if paper_size else PAGE_WIDTH) / 2
+    x_shift = (paper_size or DEFAULT_PAPER)[0] / 2
 
     def visit(item: si.SceneItem, ax: float, ay: float, visible: bool, layer_id: str = "") -> None:
         if isinstance(item, si.Group):
@@ -360,7 +370,7 @@ def _decode_v6(tree) -> PageModel:
                     text=item.text or "",
                     rectangles=[(x + x_shift + ax, y + ay, w, h) for x, y, w, h in rects],
                     color=_glyph_color(item),
-                    alpha=(item.color_rgba[3] / 255 if item.color_rgba and item.color_rgba[3] < 255 else 95 / 255),
+                    alpha=(item.color_rgba[3] / 255 if item.color_rgba and item.color_rgba[3] < 255 else HIGHLIGHT_ALPHA),
                     layer_visible=visible,
                     layer_id=layer_id,
                 )
@@ -404,7 +414,7 @@ def _decode_v6(tree) -> PageModel:
             block.height = block_height(block.paragraphs, block.width)
         except Exception as exc:
             log.debug("styled text extraction failed: %s", exc)
-            block.height = 70.0 * max(1, block.text.count("\n") + 1)
+            block.height = FALLBACK_LINE_HEIGHT * max(1, block.text.count("\n") + 1)
         return block
 
     if tree.root is not None:
@@ -423,7 +433,7 @@ def _glyph_color(item: si.GlyphRange) -> str:
     if item.color_rgba:
         r, g, b, _a = item.color_rgba
         return f"#{r:02x}{g:02x}{b:02x}"
-    return PEN_COLORS.get(getattr(item.color, "name", ""), "#ffd400")
+    return PEN_COLORS.get(getattr(item.color, "name", ""), HIGHLIGHT_COLOR)
 
 
 def _line_color(line: si.Line, tool: str) -> tuple[str, float]:
@@ -467,6 +477,10 @@ V5_POINT = struct.Struct("<6f")
 V5_LINE_PREFIX = 4
 # Widths outside this range are not a pen width; fall back to the line's own.
 V5_WIDTH_RANGE = (0.15, 60.0)
+# Counts beyond these are not counts: the framing was misread, or the file is torn.
+V5_MAX_LAYERS = 16
+V5_MAX_LINES = 20000
+V5_MAX_POINTS = 20000
 # Mean width above which a v5 stroke is treated as translucent. There is no
 # reliable pen table for this file variant -- the ids seen in real files
 # (0, 2, 5) do not line up with the classic spec, and pen 2 carries 57 px
@@ -545,22 +559,21 @@ def _decode_v5_declared(data: bytes) -> PageModel | None:
     multi-layer page legitimately holds more lines than it declares there.
     """
     size = len(data)
-    pos = 43
+    pos = HEADER_SIZE
     if pos + 4 > size:
         return None
     layers, = struct.unpack_from("<i", data, pos)
     pos += 4
-    if not 1 <= layers <= 16:
+    if not 1 <= layers <= V5_MAX_LAYERS:
         return None
 
-    low, high = V5_WIDTH_RANGE
     page = PageModel()
     for _ in range(layers):
         if pos + 4 > size:
             return None
         count, = struct.unpack_from("<i", data, pos)
         pos += 4
-        if not 0 <= count <= 20000:
+        if not 0 <= count <= V5_MAX_LINES:
             return None
         for _ in range(count):
             if pos + V5_LINE_PREFIX + V5_LINE.size > size:
@@ -570,7 +583,7 @@ def _decode_v5_declared(data: bytes) -> PageModel | None:
             # Only structural impossibilities disqualify the framing. An odd
             # pen id or width is a value to sanitise, not evidence that the
             # layout was misread -- consuming every byte is that evidence.
-            if not 0 <= npts <= 20000 or start + npts * V5_POINT.size > size:
+            if not 0 <= npts <= V5_MAX_POINTS or start + npts * V5_POINT.size > size:
                 return None
             if npts:
                 stroke = _v5_stroke(data, start, npts, pen, width, colour)
@@ -593,25 +606,23 @@ def _scan_v5(data: bytes) -> PageModel:
     primary path.
     """
     page = PageModel()
-    pos = 51
+    pos = HEADER_SIZE + 8  # past the layer count and the first layer's line count
     size = len(data)
-    while pos + 20 <= size:
+    low, high = V5_WIDTH_RANGE
+    while pos + V5_LINE.size <= size:
         line = None
-        for start in (pos, pos + 4):
-            if start + 20 > size:
+        for start in (pos, pos + V5_LINE_PREFIX):  # with and without the per-line prefix
+            if start + V5_LINE.size > size:
                 continue
-            pen, = struct.unpack_from("<i", data, start)
-            width, = struct.unpack_from("<d", data, start + 4)
-            colour, = struct.unpack_from("<i", data, start + 12)
-            npts, = struct.unpack_from("<i", data, start + 16)
+            pen, width, colour, npts = V5_LINE.unpack_from(data, start)
             if not (0 <= pen <= 23 and 0 <= colour <= 2):
                 continue
-            if not (0.15 <= width <= 60.0):
+            if not (low <= width <= high):
                 continue
-            if not (0 <= npts <= 20000) or start + 20 + npts * 24 > size:
+            if not (0 <= npts <= V5_MAX_POINTS) or start + V5_LINE.size + npts * V5_POINT.size > size:
                 continue
             if npts:
-                x, y = struct.unpack_from("<2f", data, start + 20)
+                x, y = struct.unpack_from("<2f", data, start + V5_LINE.size)
                 if not (-300 <= x <= 1800 and -300 <= y <= 2300):
                     continue
             line = (start, pen, width, colour, npts)

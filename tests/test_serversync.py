@@ -320,3 +320,20 @@ def test_manifest_with_a_malformed_absence_marker_is_refused(hosted):
         manifest['documents'][IDENTIFIER]['absent_since'] = bad
         with pytest.raises(ValueError, match='absence'):
             serversync.validate_manifest(copy.deepcopy(manifest))
+
+
+def test_unexpected_failure_is_recorded_as_error_not_left_running(hosted, monkeypatch):
+    central, local, _client = hosted
+    with running(central) as base:
+        remote = serversync.ServerClient(base)
+
+        def fail(*_args):
+            raise OSError('synthetic failure after the downloads')
+
+        monkeypatch.setattr(serversync, 'mark_absent', fail)
+        with pytest.raises(OSError, match='synthetic'):
+            serversync.sync(remote, local)
+        assert json.loads((local / cloudsync.STATE).read_bytes())['status'] == 'error'
+        assert (local / 'raw' / (IDENTIFIER + '.metadata')).is_file()
+        monkeypatch.undo()
+        assert serversync.sync(remote, local)['status'] == 'ok'
