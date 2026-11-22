@@ -13,6 +13,7 @@ an automatically installed Windows service or scheduled task.
 | Script | Keep/status | Purpose and effects | Prerequisites |
 | --- | --- | --- | --- |
 | `setup-cloud-client.ps1` | Keep; Windows x64 installer | Downloads pinned rmapi v0.0.35 ZIP, verifies SHA256, writes only `.tools/rmapi`; does not pair/upload | PowerShell, HTTPS |
+| `install-shortcut.ps1` | Keep; Windows convenience | Creates `RemarkSync.lnk` in the user's Start Menu and desktop, running this checkout's `.venv\Scripts\pythonw.exe -m remarksync` with no console window; `-NoDesktop` skips the desktop, `-Remove` deletes both. Installs nothing and adds no login task | PowerShell, the checkout's `.venv` |
 | `setup-cloud-client.py` | Keep; Linux/container installer | Downloads amd64/arm64 pinned client and verifies SHA256; writes `.tools/rmapi`; does not pair/upload | Python on Linux or explicit `--arch` during build |
 | `connect-server.ps1` | Keep; installation-specific bootstrap | Installs the already-created dedicated public key on `$REMARKSYNC_SSH_HOST` using interactive SSH password input, then verifies key authentication | Existing trusted SSH host, ignored private/public key pair; run only for initial access/recovery |
 | `pair-server.py` | Keep; installation-specific re-pairing UI | Masked code sent through SSH stdin to the server worker; renews server pairing, saves only `{paired: bool}` under ignored `tmp/deploy` | PySide6, dedicated key, existing release and Docker sudo access |
@@ -32,6 +33,7 @@ deployment profile/installer is follow-up work, not an existing feature.
 
 ```powershell
 ./scripts/setup-cloud-client.ps1
+./scripts/install-shortcut.ps1
 .venv/Scripts/python scripts/pair-server.py
 .venv/Scripts/python scripts/check-repository-hygiene.py --history
 .venv/Scripts/python scripts/package-server.py

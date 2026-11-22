@@ -31,6 +31,11 @@ python -m venv .venv
 .venv\Scripts\python -m remarksync        # GUI
 ```
 
+On Windows, `./scripts/install-shortcut.ps1` adds a **RemarkSync** shortcut to
+the Start Menu and the desktop that starts the GUI from this checkout with no
+console window (`-Remove` takes them away). It still runs the checkout's
+`.venv`; a standalone build that runs without Python is not made yet.
+
 CLI:
 
 ```bash
