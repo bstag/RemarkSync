@@ -64,8 +64,21 @@ with the backup; pruning the visible library does not erase history or reclaim
 that space. The flat backup format remains compatible with existing libraries,
 but it is not a snapshot-isolated store for simultaneous external readers.
 
-In the window, F5 rescans the open library and Ctrl+plus / Ctrl+minus zoom
-the page view.
+In the window, every action is in the menus (File, Library, Document, View,
+Help); the toolbar repeats the ones in constant use and holds the search box
+(Ctrl+F). F5 rescans the open library, Ctrl+plus / Ctrl+minus zoom the page
+view and Ctrl+0 resets it. The window's size, panels and zoom are remembered.
+A refresh, including the one after each sync, keeps the tree's folders and
+selection as they were.
+
+What goes wrong is written to `%LOCALAPPDATA%\RemarkSync\logs` (**Help → Open
+Log Folder**): `remarksync.log` for the window, `workers.log` for the sync and
+send worker, which records where an unexpected error was raised but never its
+text. Started from the shortcut the app has no console, so this is the only
+trace. A failed export, send, compile or index run also stays in a message box
+until dismissed, and indexing progress has its own corner of the status bar.
+Closing the window during a sync puts it away at once; the program ends when
+the sync has finished.
 
 ## Cloud acquisition and central-server downloads
 
@@ -286,7 +299,10 @@ claim of PDF/A compliance or exact device rendering.
    may describe the previous revision until the page can be read again.
    **Rebuild Search Index** (Ctrl+Shift+I) re-indexes everything regardless.
    The index lives in `<backup>\.remarksync-index.db`. Clicking a result
-   jumps to the page. Reading ink needs the handwriting extra, below; the
+   jumps to the page. A document whose name matches is one result, not one
+   per page; words from a name and from a page can be combined. Once a library
+   has an index, a sync that brings new or changed documents updates it
+   without being asked. Reading ink needs the handwriting extra, below; the
    choice is remembered.
 4. **Markdown → .rmdoc** (Ctrl+M): compile any `.md` into a notebook of
    editable text pages. Upload the `.rmdoc` via the tablet's USB web UI
@@ -468,8 +484,9 @@ src/remarksync/
   mdcompile.py   Markdown → paginated native text pages → .rmdoc zip
   viewer.py      Qt painter: draws a PageFrame (underlay, template, highlights,
                  ink, text, dividers); computes no geometry
-  gui.py         main window: tree, viewer, search dock, toolbar actions,
+  gui.py         main window: tree, viewer, search dock, menus and toolbar,
                  background workers for indexing and page decoding
+  applog.py      the desktop log files, for an app started without a console
   pull.py        incremental backup pull over ssh+tar: changed documents only, with a
                  local-directory adapter for tests
   backupstore.py retained raw revisions, writer lock, publication journal and rollback

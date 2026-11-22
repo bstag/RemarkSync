@@ -35,8 +35,13 @@ def main() -> int:
                 raise CloudError("Unsupported cloud operation.")
     except CloudError as exc:
         result = {"error": str(exc)}
-    except Exception:
-        # No raw client/network output or secrets in general diagnostics.
+    except Exception as exc:
+        # No raw client/network output or secrets in general diagnostics: the
+        # log gets the error's type and where it was raised, never its text.
+        from . import applog
+        import logging
+        applog.configure("workers", rotate=False)
+        logging.getLogger(__name__).error("%s stopped: %s", operation or "request", applog.where_it_failed(exc))
         result = {"error": ("Sending stopped on an unexpected error. Send again: an upload that did arrive is recognised, "
                             "not duplicated.") if operation == "send" else
                   "The cloud operation failed validation or could not read the service. Existing files were retained."}

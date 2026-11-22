@@ -211,7 +211,8 @@ or login scheduled task was installed. See [settings](settings.md).
 
 ## Validation and known limits
 
-Latest complete checkout suite: **389 passed, 19 skipped** on Windows, after the
+Latest complete checkout suite: **405 passed, 19 skipped** on Windows, after the
+2026-11-22 window, index and worker review (below) on top of the
 2026-11-21 review pass and its follow-ups (one page order key for the editor and
 the compiler, pages painted at the display's pixel ratio, worker stops that do
 not hold the window, one-line errors from `scan`, `index` and `compile`). That pass fixed seven defects (Esc could abandon a running
@@ -226,6 +227,29 @@ changes have not had a live run. Ruff passed across
 `src`, `tests`, `scripts` and `deploy/server`. Real-data/device oracles are opt-in;
 these counts do not mean every current device format has full rendering fidelity.
 Repository-tool verification is recorded separately in the housekeeping record below.
+
+The 2026-11-22 review of the window, the search index and the workers changed
+the desktop only (the server does not run this code, and needs no deployment):
+
+- Worker results were delivered through lambdas, which Qt runs on the worker's
+  thread, so page canvases and the status bar were touched off the GUI thread.
+  They are now connected to the window's own methods, checked in the real window.
+- Asking whether TrOCR is installed imported PyTorch on the GUI thread (52 s
+  cold on this PC). It is now a lookup; the import happens on the index worker.
+- The toolbar wanted 1,919 px in a 1,400 px window and hid the search box. Every
+  action is now in a menu and the toolbar wants 832 px.
+- A query with a stray `-` or `&` matched nothing; an unreadable index reported
+  "0 results". A document's name was stored in every page's text, so a name
+  returned every page. Replacing a document scanned the whole index.
+- A refresh rebuilt the tree folded up, every five minutes under automatic
+  sync; synced documents were not searchable until indexed by hand.
+- Nothing was logged when started from the shortcut; failures were only a
+  status line; closing during a sync was refused; the painted-page cache was
+  bounded by count (about 1 GB at full zoom); switching documents waited for
+  the previous one's decoder.
+
+The index format changed (`v3`), so the first **Update Search Index** after
+this re-reads every document once. Handwriting comes from its cache.
 
 Known limits remain: newer scene fields can produce decoder warnings. Across
 this library that is 78 pages of one large annotated book, four of a handwriting

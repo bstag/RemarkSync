@@ -217,3 +217,62 @@ def test_cancelling_between_pages_abandons_the_document_in_hand(backup_root, tmp
     rest = index.refresh(_docs(backup_root))
     assert rest.completed and rest.indexed == 4
     assert index.query("flux capacitor")
+
+
+def test_stray_punctuation_does_not_empty_a_search(backup_root, tmp_path):
+    from remarksync.search import _fts_query
+
+    index = SearchIndex(tmp_path / "index.db")
+    index.refresh(_docs(backup_root))
+    assert index.query("flux - capacitor") and index.query("flux & capacitor")
+    assert _fts_query("- & *") == "" and index.query("- & *") == []
+
+
+def test_a_documents_name_is_one_hit_not_every_page(backup_root, tmp_path):
+    from remarksync.search import NAME_HIT
+
+    index = SearchIndex(tmp_path / "index.db")
+    index.refresh(_docs(backup_root))
+    ink = next(d for d in _docs(backup_root) if d.uuid == INK_UUID)
+    assert len(ink.pages) > 1
+    hits = [h for h in index.query("ink notes") if h.doc_uuid == INK_UUID]
+    assert len(hits) == 1 and hits[0].snippet == NAME_HIT and hits[0].page_no == 0
+    # a name and a page's own words still combine, and that page is the hit
+    mixed = index.query("ink quantum")
+    assert mixed and all(h.doc_uuid == INK_UUID and h.snippet != NAME_HIT for h in mixed)
+
+
+def test_replacing_a_document_removes_exactly_its_own_pages(backup_root, tmp_path):
+    import sqlite3
+
+    index = SearchIndex(tmp_path / "index.db")
+    docs = _docs(backup_root)
+    index.refresh(docs)
+    index.refresh(docs, force=True)
+    index.refresh(list(reversed(docs)), force=True)
+    conn = sqlite3.connect(index.path)
+    try:
+        counts = dict(conn.execute("SELECT doc_uuid, count(*) FROM pages_fts GROUP BY doc_uuid"))
+        spans = {uuid: (first, last) for uuid, first, last in conn.execute("SELECT uuid, first_row, last_row FROM docs")}
+    finally:
+        conn.close()
+    assert counts == {d.uuid: len(d.pages) for d in docs if d.pages}
+    assert all(spans[d.uuid][1] - spans[d.uuid][0] + 1 == len(d.pages) for d in docs)
+
+
+def test_index_deleted_under_the_app_is_rebuilt_and_a_damaged_one_is_an_error(backup_root, tmp_path):
+    import pytest
+
+    from remarksync.search import SearchError
+
+    index = SearchIndex(tmp_path / "index.db")
+    index.refresh(_docs(backup_root))
+    for leftover in tmp_path.glob("index.db*"):
+        leftover.unlink()
+    assert index.query("flux") == []
+    assert index.refresh(_docs(backup_root)).indexed == 4 and index.query("flux capacitor")
+
+    damaged = SearchIndex(tmp_path / "damaged.db")
+    damaged.path.write_bytes(b"this is not a database" * 100)
+    with pytest.raises(SearchError):
+        damaged.query("flux")

@@ -19,11 +19,11 @@ from pathlib import Path
 from .backup import DocItem, iter_docs, scan_backup
 from .backupstore import has_unfinished, read_json
 from .recognize import CACHE_NAME, RecognitionCache, handwriting_extractor, tablet_conversion
-from .search import DEFAULT_EXTRACTORS, IndexReport, Progress, SearchHit, SearchIndex
+from .search import DEFAULT_EXTRACTORS, IndexReport, Progress, SearchError, SearchHit, SearchIndex
 
 INDEX_NAME = ".remarksync-index.db"
 
-__all__ = ["INDEX_NAME", "IndexReport", "Library", "NoIndexError", "Progress", "SearchHit"]
+__all__ = ["INDEX_NAME", "IndexReport", "Library", "NoIndexError", "Progress", "SearchError", "SearchHit"]
 
 
 class NoIndexError(LookupError):
@@ -135,7 +135,8 @@ class Library:
 
     def search(self, query: str, limit: int = 200) -> list[SearchHit]:
         """Full-text search over the index. Raises ``NoIndexError`` if the
-        library has never been indexed."""
+        library has never been indexed, ``SearchError`` if the index cannot
+        be read."""
         if not self.has_index:
             raise NoIndexError(f"{self.root} has no search index yet")
         return self._index.query(query, limit=limit)

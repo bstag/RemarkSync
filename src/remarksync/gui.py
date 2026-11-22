@@ -12,13 +12,14 @@ import tempfile
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QProcess, QSettings, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QPalette
+from PySide6.QtCore import QObject, QProcess, QSettings, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
     QFileDialog,
     QInputDialog,
+    QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
@@ -35,9 +36,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import APP_NAME, __version__
+from . import APP_NAME, __version__, applog
 from .backup import DocItem, open_rmdoc
-from .library import IndexReport, Library, NoIndexError
+from .library import IndexReport, Library, NoIndexError, SearchError
 from .mdcompile import markdown_to_rmdoc
 from .layout import decode_frame, lay_out
 from .rmdata import PageModel
@@ -49,6 +50,7 @@ log = logging.getLogger(__name__)
 # How long stopping a worker may hold the window. One that needs longer (a page
 # of handwriting mid-recognition) finishes in the background instead.
 STOP_WAIT_MS = 250
+DEFAULT_ZOOM, MIN_ZOOM, MAX_ZOOM = 0.62, 0.25, 2.5
 
 
 class DecodeWorker(QObject):
@@ -58,14 +60,21 @@ class DecodeWorker(QObject):
 
     Only plain page sizes are passed in. All PDF access stays on the GUI
     thread; separate MuPDF document handles do not make threading safe.
+
+    ``token`` comes back with every frame and says which opening of a
+    document it belongs to. The window connects its own methods to these
+    signals, never a lambda: Qt runs a QObject's method on that object's
+    thread, but a bare function on whichever thread emitted.
     """
 
-    decoded = Signal(int, object)  # page index, PageFrame
+    decoded = Signal(int, int, object)  # token, page index, PageFrame
     finished = Signal()
 
-    def __init__(self, doc: DocItem, start: int = 0, *, base_sizes: dict[int, tuple[float, float]] | None = None):
+    def __init__(self, doc: DocItem, start: int = 0, *, base_sizes: dict[int, tuple[float, float]] | None = None,
+                 token: int = 0):
         super().__init__()
         self._doc = doc
+        self._token = token
         self._start = max(0, min(start, max(0, len(doc.pages) - 1)))
         self._cancel = threading.Event()
         self._base_sizes = dict(base_sizes or {})
@@ -87,7 +96,7 @@ class DecodeWorker(QObject):
                 except Exception:  # a bad page must not stop the document
                     log.exception("decoding page %d failed", index)
                     frame = lay_out(PageModel(error=f"Page {index + 1} could not be decoded"), base_size=size)
-                self.decoded.emit(index, frame)
+                self.decoded.emit(self._token, index, frame)
         finally:
             self.finished.emit()
 
@@ -97,17 +106,20 @@ class IndexWorker(QObject):
 
     The Library stays synchronous; this object is the only place that knows
     about threads. Progress comes back as signals, cancellation goes in as
-    a flag checked between documents.
+    a flag checked between documents. Every signal starts with ``run``, the
+    number the window gave this run, so a late signal from a run it has
+    since stopped is recognised and dropped.
     """
 
-    progressed = Signal(str, int)  # document name, documents done
-    finished = Signal(object)  # IndexReport
-    failed = Signal(str)
+    progressed = Signal(int, str, int)  # run, document name, documents done
+    finished = Signal(int, object)  # run, IndexReport
+    failed = Signal(int, str)  # run, message
 
-    def __init__(self, library: Library, force: bool):
+    def __init__(self, library: Library, force: bool, run: int = 0):
         super().__init__()
         self._library = library
         self._force = force
+        self._run = run
         self._cancel = threading.Event()
         self._done = 0
 
@@ -119,14 +131,14 @@ class IndexWorker(QObject):
             report = self._library.refresh_index(progress=self, force=self._force)
         except Exception as exc:  # keep the UI alive whatever the indexer hit
             log.exception("indexing failed")
-            self.failed.emit(str(exc))
+            self.failed.emit(self._run, str(exc))
             return
-        self.finished.emit(report)
+        self.finished.emit(self._run, report)
 
     def __call__(self, name: str) -> bool:
         """The index's progress callback: one document is done."""
         self._done += 1
-        self.progressed.emit(name, self._done)
+        self.progressed.emit(self._run, name, self._done)
         return not self._cancel.is_set()
 
     def cancelled(self) -> bool:
@@ -135,6 +147,8 @@ class IndexWorker(QObject):
 
 
 class MainWindow(QMainWindow):
+    problem = Signal(str)  # an error nothing caught, from any thread
+
     def __init__(self, *, cloud_autostart: bool = True):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} {__version__}")
@@ -149,8 +163,12 @@ class MainWindow(QMainWindow):
         self._canvases: list[PageCanvas] = []
         self._underlay: PdfUnderlay | None = None
         self._export_process: QProcess | None = None
-        self._scale = 0.62
         self._active_doc: DocItem | None = None
+        self._exportable = False  # the open document has an original PDF to annotate
+        self._index_run = 0  # which indexing run a worker's signal belongs to
+        self._retired: set[QThread] = set()  # decoders of closed documents, finishing their page
+        self._stale_extractions: list = []  # their .rmdoc folders, removed once they have finished
+        self._closing = False  # the window is hidden and closes when the sync finishes
         self._doc_token = 0  # which document a decoded frame belongs to
         self._target_page: int | None = None
         self._page_errors: dict[int, str] = {}
@@ -167,6 +185,8 @@ class MainWindow(QMainWindow):
         self._fill_timer.timeout.connect(self._fill_batch)
 
         self.settings = QSettings("RemarkSync", APP_NAME)
+        self._scale = min(MAX_ZOOM, max(MIN_ZOOM, self.settings.value("zoom", DEFAULT_ZOOM, type=float)))
+        self.problem.connect(self._show_problem)
 
         self._build_ui()
         self._restore_state()
@@ -178,24 +198,26 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ UI
 
     def _build_ui(self) -> None:
-        toolbar = QToolBar("Main")
-        toolbar.setMovable(False)
-        self.addToolBar(toolbar)
+        """Everything is in the menus; the toolbar repeats the few actions in
+        constant use and always has room for the search box."""
 
-        def add_action(text, slot, shortcut=None, tip=None):
-            act = toolbar.addAction(text)
+        def action(text, slot, shortcut=None, tip=None, short=None):
+            act = QAction(text, self)
             # QAction.triggered carries a checked bool argument; wrap the
             # slot so it never leaks into optional parameters (open_folder)
             act.triggered.connect(lambda _checked=False, s=slot: s())
             if shortcut:
-                act.setShortcut(shortcut)
+                act.setShortcuts(shortcut if isinstance(shortcut, list) else [shortcut])
             if tip:
                 act.setToolTip(tip)
+                act.setStatusTip(tip)
+            if short:
+                act.setIconText(short)  # what the toolbar shows
             return act
 
-        def add_toggle(text, key, tip, slot=None):
+        def toggle(text, key, tip, slot=None):
             """A checkable action whose state is remembered under ``key``."""
-            act = toolbar.addAction(text)
+            act = QAction(text, self)
             act.setCheckable(True)
             act.setToolTip(tip)
             act.setChecked(self.settings.value(key, False, type=bool))
@@ -204,52 +226,94 @@ class MainWindow(QMainWindow):
                 act.toggled.connect(slot)
             return act
 
-        add_action("Open Library Folder…", self.open_folder, "Ctrl+O", "Open a raw reMarkable backup directory")
-        add_action("Open .rmdoc…", self.open_rmdoc_action, "Ctrl+R", "Open a single .rmdoc archive")
-        add_action("Library sync…", self.library_sync_action, tip="Download updates from your central server or reMarkable Cloud")
-        toolbar.addSeparator()
-        add_action("Refresh", self.refresh, "F5")
-        self.removed_action = add_toggle(
+        open_library = action("Open Library Folder…", self.open_folder, "Ctrl+O",
+                              "Open a raw reMarkable backup directory", short="Open Library")
+        open_archive = action("Open .rmdoc…", self.open_rmdoc_action, "Ctrl+R", "Open a single .rmdoc archive")
+        sync = action("Library Sync…", self.library_sync_action,
+                      tip="Download updates from your central server or reMarkable Cloud", short="Sync")
+        compile_md = action("Compile Markdown → .rmdoc…", self.compile_md_action, "Ctrl+M")
+        send_md = action("Send Markdown to Tablet…", self.send_md_action, "Ctrl+Shift+M",
+                         "Compile a Markdown file and send it to your reMarkable account as a new notebook")
+        leave = action("Exit", self.close, "Ctrl+Q")
+
+        refresh = action("Refresh", self.refresh, "F5", "Read the library folder again")
+        self.removed_action = toggle(
             "Show Removed", "show_removed",
             "Also list documents that were deleted on the tablet. Their preserved copies "
-            "are always kept; this only chooses whether the tree shows them.", lambda _on: self._populate_tree())
-        self.index_action = add_action(
+            "are always kept; this only chooses whether the tree shows them.", lambda _on: self._populate_tree(keep=True))
+        find = action("Find in Library", self.focus_search, "Ctrl+F", "Type in the search box")
+        self.index_action = action(
             "Update Search Index", self.update_index, "Ctrl+I",
             "Index new and changed documents in the background (click again to cancel)",
         )
-        add_action("Rebuild Search Index", self.rebuild_index, "Ctrl+Shift+I", "Re-index every document from scratch")
-        self.handwriting_action = add_toggle(
+        rebuild = action("Rebuild Search Index", self.rebuild_index, "Ctrl+Shift+I", "Re-index every document from scratch")
+        self.handwriting_action = toggle(
             "Read Handwriting", "handwriting",
             "When indexing, also read handwriting (TrOCR on the GPU if installed, "
             "else the Windows ink recogniser); results are cached per page", self._on_handwriting_toggled)
         self._on_handwriting_toggled(self.handwriting_action.isChecked())
-        add_action("Compile Markdown → .rmdoc…", self.compile_md_action, "Ctrl+M")
-        add_action("Send Markdown to Tablet…", self.send_md_action, "Ctrl+Shift+M",
-                   "Compile a Markdown file and send it to your reMarkable account as a new notebook")
-        self.edit_action = add_action("Edit Document…", self.edit_doc_action, "Ctrl+D",
-                                      "Edit the open notebook's typed text and pages, then save it or send it to the tablet")
+
+        self.edit_action = action("Edit Document…", self.edit_doc_action, "Ctrl+D",
+                                  "Edit the open notebook's typed text and pages, then save it or send it to the tablet",
+                                  short="Edit")
         self.edit_action.setEnabled(False)
-        self.export_action = add_action("Export Annotated PDF…", self.export_pdf_action, "Ctrl+E",
-                                        "Save a preservation copy of the original PDF with visible highlights and notes")
+        self.export_action = action("Export Annotated PDF…", self.export_pdf_action, "Ctrl+E",
+                                    "Save a preservation copy of the original PDF with visible highlights and notes",
+                                    short="Export PDF")
         self.export_action.setEnabled(False)
-        self.pdf_column_action = add_toggle("Match PDF Text Width", "pdf_column_notes_v2",
-                                            "Wrap typed notes to the original PDF's body-text column when exporting")
-        toolbar.addSeparator()
-        add_action("Zoom −", lambda: self.zoom(-0.1), "Ctrl+-")
-        add_action("Zoom +", lambda: self.zoom(+0.1), "Ctrl++")
+        self.pdf_column_action = toggle("Match PDF Text Width", "pdf_column_notes_v2",
+                                        "Wrap typed notes to the original PDF's body-text column when exporting")
+
+        zoom_out = action("Zoom Out", lambda: self.zoom(-0.1), "Ctrl+-", short="Zoom −")
+        zoom_in = action("Zoom In", lambda: self.zoom(+0.1), ["Ctrl++", "Ctrl+="], short="Zoom +")
+        zoom_reset = action("Reset Zoom", lambda: self.zoom(DEFAULT_ZOOM - self._scale), "Ctrl+0")
+        show_log = action("Open Log Folder", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(applog.log_dir()))),
+                          tip="Where RemarkSync writes what went wrong")
+
+        # right: search results dock (made here so the View menu can list it)
+        self.results_list = QListWidget()
+        self.results_list.itemClicked.connect(self._on_result_click)
+        self.results_list.itemActivated.connect(self._on_result_activated)
+        dock = QDockWidget("Search results", self)
+        dock.setObjectName("results")
+        dock.setWidget(self.results_list)
+        dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetClosable)
+        self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        self.results_dock = dock
+
+        for title, entries in (
+            ("&File", (open_library, open_archive, sync, None, compile_md, send_md, None, leave)),
+            ("&Library", (refresh, self.removed_action, None, find, self.index_action, rebuild, self.handwriting_action)),
+            ("&Document", (self.edit_action, self.export_action, self.pdf_column_action)),
+            ("&View", (zoom_in, zoom_out, zoom_reset, None, dock.toggleViewAction())),
+            ("&Help", (show_log,)),
+        ):
+            menu = self.menuBar().addMenu(title)
+            menu.setToolTipsVisible(True)
+            for entry in entries:
+                menu.addSeparator() if entry is None else menu.addAction(entry)
+
+        toolbar = QToolBar("Main")
+        toolbar.setObjectName("main")
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
+        for entry in (open_library, sync, refresh, None, self.index_action, None, self.edit_action, self.export_action,
+                      None, zoom_out, zoom_in):
+            toolbar.addSeparator() if entry is None else toolbar.addAction(entry)
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         toolbar.addWidget(spacer)
 
         self.search_box = QLineEdit()
-        self.search_box.setPlaceholderText("Search library… (Enter)")
+        self.search_box.setPlaceholderText("Search library… (Ctrl+F, Enter)")
+        self.search_box.setClearButtonEnabled(True)
         self.search_box.setFixedWidth(280)
         self.search_box.returnPressed.connect(self.run_search)
         toolbar.addWidget(self.search_box)
 
         # left: document tree / center: pages
-        splitter = QSplitter(Qt.Horizontal)
+        self.splitter = splitter = QSplitter(Qt.Horizontal)
         self.doc_tree = QTreeWidget()
         self.doc_tree.setHeaderLabel("Documents")
         self.doc_tree.itemClicked.connect(self._on_tree_click)
@@ -268,23 +332,43 @@ class MainWindow(QMainWindow):
         splitter.setSizes([300, 1100])
         self.setCentralWidget(splitter)
 
-        # right: search results dock
-        self.results_list = QListWidget()
-        self.results_list.itemClicked.connect(self._on_result_click)
-        self.results_list.itemActivated.connect(self._on_result_activated)
-        dock = QDockWidget("Search results", self)
-        dock.setWidget(self.results_list)
-        dock.setFeatures(QDockWidget.DockWidgetMovable)
-        self.addDockWidget(Qt.RightDockWidgetArea, dock)
-        self.results_dock = dock
-
         self.setStatusBar(QStatusBar())
+        # indexing progress has its own corner, so it never writes over the
+        # outcome of something the user just did
+        self.index_progress = QLabel()
+        self.statusBar().addPermanentWidget(self.index_progress)
         self.statusBar().showMessage("Open a backup folder or a .rmdoc to begin.")
 
     def _restore_state(self) -> None:
+        for key, restore in (("geometry", self.restoreGeometry), ("window_state", self.restoreState),
+                             ("splitter", self.splitter.restoreState)):
+            saved = self.settings.value(key)
+            if saved is not None:
+                restore(saved)
         last = self.settings.value("library_path")
         if isinstance(last, (str, Path)) and Path(last).exists():
             self.open_folder(Path(last))
+
+    def _save_view(self) -> None:
+        self.settings.setValue("geometry", self.saveGeometry())
+        self.settings.setValue("window_state", self.saveState())
+        self.settings.setValue("splitter", self.splitter.saveState())
+
+    def _fail(self, message: str) -> None:
+        """Something the user asked for did not happen. The status line is
+        overwritten by whatever comes next, so this also stays in a box until
+        it is dismissed (without stopping the window: nothing waits on it)."""
+        self.statusBar().showMessage(message)
+        box = QMessageBox(QMessageBox.Warning, APP_NAME, message, QMessageBox.Ok, self)
+        box.setAttribute(Qt.WA_DeleteOnClose)
+        box.open()
+
+    def _show_problem(self, summary: str) -> None:
+        self.statusBar().showMessage(f"Unexpected error: {summary} — details in {applog.log_dir() / 'remarksync.log'}")
+
+    def focus_search(self) -> None:
+        self.search_box.setFocus(Qt.ShortcutFocusReason)
+        self.search_box.selectAll()
 
     # --------------------------------------------------------------- library
 
@@ -300,7 +384,7 @@ class MainWindow(QMainWindow):
         try:
             library = Library(path)
         except Exception as exc:
-            self.statusBar().showMessage(f"Could not open library: {exc}")
+            self._fail(f"Could not open library {path}: {exc}")
             return
         self._library = library
         self.settings.setValue("library_path", str(path))
@@ -317,9 +401,30 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 self.statusBar().showMessage(f"Could not refresh library: {exc}")
                 return
-            self._populate_tree()
+            self._populate_tree(keep=True)
 
-    def _populate_tree(self) -> None:
+    @staticmethod
+    def _node_key(node: QTreeWidgetItem) -> str:
+        """What a tree node is, in a form that outlives rebuilding the tree."""
+        item = node.data(0, Qt.UserRole)
+        return getattr(item, "uuid", None) or "removed-group"
+
+    def _tree_nodes(self):
+        pending = [self.doc_tree.invisibleRootItem()]
+        while pending:
+            node = pending.pop()
+            for i in range(node.childCount()):
+                pending.append(node.child(i))
+                yield node.child(i)
+
+    def _populate_tree(self, keep: bool = False) -> None:
+        """Fill the tree from the library. ``keep`` rebuilds it in place for
+        the same library (a sync, a refresh, Show Removed): what was expanded
+        stays expanded, and the selection and the scroll position stay put."""
+        keep = keep and self.doc_tree.topLevelItemCount() > 0
+        expanded = {self._node_key(node) for node in self._tree_nodes() if node.isExpanded()}
+        current = self._node_key(self.doc_tree.currentItem()) if self.doc_tree.currentItem() else None
+        scrolled = self.doc_tree.verticalScrollBar().value()
         self.doc_tree.clear()
         if self._library is None:
             return
@@ -345,7 +450,8 @@ class MainWindow(QMainWindow):
                 node.setData(0, Qt.UserRole, item)
 
         add_items(self.doc_tree, self._library.tree, "")
-        self.doc_tree.expandToDepth(0)
+        if not keep:
+            self.doc_tree.expandToDepth(0)
         if removed and self.removed_action.isChecked():
             # after the expand, so the group starts collapsed
             group = QTreeWidgetItem(self.doc_tree, [f"🗑 Removed from tablet ({len(removed)})"])
@@ -355,6 +461,12 @@ class MainWindow(QMainWindow):
                 node.setForeground(0, self.palette().color(QPalette.Disabled, QPalette.Text))
                 node.setToolTip(0, f"Gone from the tablet since {absent[item.uuid]}")
                 node.setData(0, Qt.UserRole, item)
+        if keep:
+            for node in self._tree_nodes():
+                node.setExpanded(self._node_key(node) in expanded)
+                if current is not None and self._node_key(node) == current:
+                    self.doc_tree.setCurrentItem(node)
+            self.doc_tree.verticalScrollBar().setValue(scrolled)
 
     def _on_tree_click(self, node: QTreeWidgetItem, _col: int) -> None:
         item = node.data(0, Qt.UserRole)
@@ -371,11 +483,11 @@ class MainWindow(QMainWindow):
     def show_doc(self, doc: DocItem, page_no: int | None = None) -> None:
         """Open a document: placeholder canvases appear at once, a worker
         decodes the pages (the requested page first) and fills them in."""
-        if not self._stop_decoding(then=lambda: self.show_doc(doc, page_no)):
-            return
+        self._retire_decoding()
         self._fill_timer.stop()
         for canvas in self._canvases:
             self._pages_layout.removeWidget(canvas)
+            canvas.hide()  # it lives until the event loop deletes it, and must not be painted meanwhile
             canvas.deleteLater()
         self._canvases = []
         self._pending_frames = {}
@@ -394,8 +506,10 @@ class MainWindow(QMainWindow):
                 pdf_problem = f" — could not open base PDF, showing the notes without it: {exc}"
 
         self._active_doc = doc
+        # annotated-PDF export needs the original PDF to annotate
+        self._exportable = doc.file_type in ("pdf", "epub") and base_pdf is not None
         self.edit_action.setEnabled(doc.file_type == "notebook")
-        self.export_action.setEnabled(self._export_process is None and self._can_export(doc))
+        self.export_action.setEnabled(self._export_process is None and self._exportable)
         self._target_page = page_no
         self._page_errors = {}
         # placeholders are cheap; still add the long tail in batches so a
@@ -426,11 +540,6 @@ class MainWindow(QMainWindow):
         if doc is None or len(self._canvases) >= len(doc.pages):
             self._fill_timer.stop()
 
-    @staticmethod
-    def _can_export(doc: DocItem | None) -> bool:
-        """Annotated-PDF export needs the original PDF to annotate."""
-        return doc is not None and doc.file_type in ("pdf", "epub") and doc.resolve_base_pdf() is not None
-
     # -- background decoding ------------------------------------------------
 
     @property
@@ -448,12 +557,11 @@ class MainWindow(QMainWindow):
                 size = self._underlay.page_size(page.base_index)
                 if size is not None:
                     sizes[page.index] = size
-        worker = DecodeWorker(doc, start, base_sizes=sizes)
+        worker = DecodeWorker(doc, start, base_sizes=sizes, token=self._doc_token)
         thread = QThread(self)
         worker.moveToThread(thread)
-        token = self._doc_token
         thread.started.connect(worker.run)
-        worker.decoded.connect(lambda index, frame, t=token: self._on_page_decoded(t, index, frame))
+        worker.decoded.connect(self._on_page_decoded)  # a method of this window: delivered on its thread
         worker.finished.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
         self._decode_thread, self._decode_worker = thread, worker
@@ -476,7 +584,40 @@ class MainWindow(QMainWindow):
         for thread in [t for t in self._deferred if t.isFinished()]:
             self._deferred.pop(thread)()
 
+    def _retire_decoding(self) -> None:
+        """Let go of the open document's decoder without waiting for it. It
+        stops after the page in hand; its frames carry an old token and are
+        dropped, so the next document can open at once."""
+        thread, worker = self._decode_thread, self._decode_worker
+        self._decode_thread, self._decode_worker = None, None
+        if thread is None:
+            return
+        if worker is not None:
+            worker.cancel()
+        thread.quit()
+        self._deferred.pop(thread, None)
+        self._retired.add(thread)
+        thread.finished.connect(self._release_retired)
+        self._release_retired()
+
+    def _release_retired(self) -> None:
+        for thread in [t for t in self._retired if t.isFinished()]:
+            self._retired.discard(thread)
+            thread.deleteLater()
+        if not self._retired:
+            # nothing can still be reading an archive that is no longer shown
+            for extraction in self._stale_extractions:
+                extraction.cleanup()
+            self._stale_extractions = []
+
     def _stop_decoding(self, then=None) -> bool:
+        """Stop every decoder and wait briefly for it: for closing the window,
+        which must not go while a thread of its own is still running."""
+        for thread in list(self._retired):
+            if not thread.wait(STOP_WAIT_MS):
+                self._defer_until_stopped(thread, then, "Page decoding")
+                return False
+        self._release_retired()
         if self._decode_thread is None:
             return True
         if self._decode_worker is not None:
@@ -506,7 +647,8 @@ class MainWindow(QMainWindow):
             self._pending_frames[index] = frame
 
     def zoom(self, delta: float) -> None:
-        self._scale = min(2.5, max(0.25, self._scale + delta))
+        self._scale = min(MAX_ZOOM, max(MIN_ZOOM, self._scale + delta))
+        self.settings.setValue("zoom", self._scale)
         for canvas in self._canvases:
             canvas.set_scale(self._scale)
 
@@ -545,16 +687,15 @@ class MainWindow(QMainWindow):
             return
         self._library.handwriting = self.handwriting_action.isChecked()
         self._handwriting_missing = self.handwriting_action.isChecked() and not self._library.handwriting
-        worker = IndexWorker(self._library, force)
+        self._index_run += 1
+        worker = IndexWorker(self._library, force, self._index_run)
         thread = QThread(self)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
-        worker.progressed.connect(lambda name, done, w=worker: self._on_index_progress(name, done)
-                                  if self._index_worker is w else None)
-        worker.finished.connect(lambda report, w=worker: self._on_index_finished(report)
-                                if self._index_worker is w else None)
-        worker.failed.connect(lambda message, w=worker: self._on_index_failed(message)
-                              if self._index_worker is w else None)
+        # methods of this window, so they are delivered on its thread
+        worker.progressed.connect(self._on_index_progress)
+        worker.finished.connect(self._on_index_finished)
+        worker.failed.connect(self._on_index_failed)
         worker.finished.connect(thread.quit)
         worker.failed.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
@@ -588,16 +729,24 @@ class MainWindow(QMainWindow):
         self._deferred.pop(self._index_thread, None)
         self._index_thread.deleteLater()
         self._index_thread, self._index_worker = None, None
-        self.index_action.setText("Update Search Index")
+        self._index_run += 1  # whatever the stopped run still has queued is no longer wanted
+        self._index_idle()
         return True
 
-    def _on_index_progress(self, name: str, done: int) -> None:
-        total = len(self._library) if self._library else 0
-        self.statusBar().showMessage(f"Indexing {done}/{total}{self._handwriting_note()}: {name}")
-
-    def _on_index_finished(self, report: IndexReport) -> None:
-        self._index_worker = None  # it deletes itself; the thread is released by the next start or stop
+    def _index_idle(self) -> None:
         self.index_action.setText("Update Search Index")
+        self.index_progress.clear()
+
+    def _on_index_progress(self, run: int, name: str, done: int) -> None:
+        if run == self._index_run:
+            total = len(self._library) if self._library else 0
+            self.index_progress.setText(f"Indexing {done}/{total}: {name}")
+
+    def _on_index_finished(self, run: int, report: IndexReport) -> None:
+        if run != self._index_run:
+            return
+        self._index_worker = None  # it deletes itself; the thread is released by the next start or stop
+        self._index_idle()
         state = "Index updated" if report.completed else "Indexing cancelled"
         message = (f"{state}: {report.indexed} documents indexed ({report.pages} pages), "
                    f"{report.skipped} unchanged, {report.removed} removed, {report.failed} failed")
@@ -610,23 +759,33 @@ class MainWindow(QMainWindow):
             message += self._handwriting_note()
         self.statusBar().showMessage(message)
 
-    def _on_index_failed(self, message: str) -> None:
+    def _on_index_failed(self, run: int, message: str) -> None:
+        if run != self._index_run:
+            return
         self._index_worker = None
-        self.index_action.setText("Update Search Index")
-        self.statusBar().showMessage(f"Indexing failed: {message}")
+        self._index_idle()
+        self._fail(f"Indexing failed: {message}")
 
     def run_search(self) -> None:
         query = self.search_box.text().strip()
-        if not query or self._library is None:
+        if not query:
+            return
+        if self._library is None:
+            self.statusBar().showMessage("Open a library folder first.")
             return
         try:
             hits = self._library.search(query)
         except NoIndexError:
             self.statusBar().showMessage("No search index — use “Update Search Index” first (Ctrl+I).")
             return
+        except SearchError as exc:
+            self._fail(f"Search failed: {exc}")
+            return
+        self.results_dock.show()
         self.results_list.clear()
         for hit in hits:
-            widget_item = QListWidgetItem(f"{hit.doc_name} — p{hit.page_no + 1}\n{hit.snippet}")
+            # the page first: a narrow panel cuts a long name off before anything after it
+            widget_item = QListWidgetItem(f"p{hit.page_no + 1} — {hit.doc_name}\n{hit.snippet}")
             widget_item.setData(Qt.UserRole, hit)
             self.results_list.addItem(widget_item)
         self.statusBar().showMessage(f"{len(hits)} results for “{query}”")
@@ -657,12 +816,14 @@ class MainWindow(QMainWindow):
             doc = open_rmdoc(Path(chosen), Path(extraction.name))
         except Exception as exc:
             extraction.cleanup()
-            self.statusBar().showMessage(f"Could not open {chosen}: {exc}")
+            self._fail(f"Could not open {chosen}: {exc}")
             return
         self.show_doc(doc)
         if self._extraction is not None:
-            self._extraction.cleanup()
+            # the archive shown until now; its decoder may still be on a page
+            self._stale_extractions.append(self._extraction)
         self._extraction = extraction
+        self._release_retired()
 
     def library_sync_action(self, *, show: bool = True) -> None:
         from .cloudsync_dialog import CloudSyncDialog
@@ -678,10 +839,24 @@ class MainWindow(QMainWindow):
         self._cloud_dialog = dialog
         dialog.library_requested.connect(lambda path: self.open_folder(Path(path)))
         dialog.synced.connect(self._cloud_synced)
+        dialog.idle.connect(self._sync_idle)
 
-    def _cloud_synced(self, path: str) -> None:
-        if self._library is not None and Path(path).resolve() == self._library.root.resolve():
-            self.refresh()
+    def _cloud_synced(self, path: str, changed: bool) -> None:
+        if self._library is None or Path(path).resolve() != self._library.root.resolve():
+            return
+        self.refresh()
+        # what the sync brought is searchable without being asked for, once
+        # the library has an index to keep up to date
+        if changed and self._library.has_index and not self.is_indexing:
+            self._start_indexing(force=False)
+
+    def _sync_idle(self) -> None:
+        if self._closing:
+            self._closing = False
+            if self.close():
+                QApplication.quit()
+            else:
+                self.show()  # something else still holds the window open; it says what
 
     def export_pdf_action(self) -> None:
         from .edit_dialog import safe_filename
@@ -709,7 +884,7 @@ class MainWindow(QMainWindow):
             result = {"error": bytes(process.readAllStandardError()).decode("utf-8", errors="replace")
                       or process.errorString()}
         if code or "error" in result:
-            self.statusBar().showMessage(f"PDF export failed: {result.get('error', 'worker stopped')}")
+            self._fail(f"PDF export failed: {result.get('error', 'worker stopped')}")
         else:
             warnings = result.get("warnings", [])
             message = f"Exported {result['path']} — {result['pages']} pages"
@@ -717,7 +892,7 @@ class MainWindow(QMainWindow):
                 message += f"; {len(warnings)} fidelity warnings in remarksync-manifest.json: {warnings[0]}"
             self.statusBar().showMessage(message)
         self._export_process = None
-        self.export_action.setEnabled(self._can_export(self._active_doc))
+        self.export_action.setEnabled(self._exportable)
 
     def compile_md_action(self) -> None:
         src, _ = QFileDialog.getOpenFileName(self, "Choose Markdown file", "", "Markdown (*.md *.markdown *.txt)")
@@ -733,7 +908,7 @@ class MainWindow(QMainWindow):
             paper = self._paper_size()
             path = markdown_to_rmdoc(Path(src).read_text(encoding="utf-8"), Path(src).stem, Path(out), paper)
         except Exception as exc:
-            self.statusBar().showMessage(f"Compile failed: {exc}")
+            self._fail(f"Compile failed: {exc}")
             return
         for_paper = f" for {self._paper_words(paper)}" if paper else ""
         self.statusBar().showMessage(f"Compiled {path}{for_paper} — upload it via the tablet's USB web UI.")
@@ -752,7 +927,8 @@ class MainWindow(QMainWindow):
         sender = self._md_sender
         if sender is None:
             self._md_sender = sender = Sender(self)
-            sender.finished.connect(lambda result: self.statusBar().showMessage(describe(result)))
+            sender.finished.connect(lambda result: (self._fail if "error" in result else self.statusBar().showMessage)(
+                describe(result)))
         if sender.busy:
             self.statusBar().showMessage("A document is still being sent.")
             return
@@ -769,7 +945,7 @@ class MainWindow(QMainWindow):
             pages = paginate(markdown_to_paragraphs(Path(src).read_text(encoding="utf-8")), paper)
             data = build_rmdoc(name, pages, paper)
         except Exception as exc:
-            self.statusBar().showMessage(f"Compile failed: {exc}")
+            self._fail(f"Compile failed: {exc}")
             return
         for_paper = f", laid out for {self._paper_words(paper)}" if paper else ""
         if QMessageBox.question(self, "Send to tablet", f"Send '{name}' ({len(pages)} pages{for_paper}) to your "
@@ -788,7 +964,7 @@ class MainWindow(QMainWindow):
         try:
             draft = Draft.from_document(doc)
         except (EditError, OSError) as exc:
-            self.statusBar().showMessage(f"Cannot edit {doc.name}: {exc}")
+            self._fail(f"Cannot edit {doc.name}: {exc}")
             return
         dialog = EditDialog(draft, self)
         # a closed dialog is finished with, unless it is still sending
@@ -805,7 +981,11 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         if self._cloud_dialog is not None and self._cloud_dialog.process is not None:
-            self.statusBar().showMessage("Wait for the library sync to finish before closing.")
+            # a sync is not cut short, and the user is not made to wait for it:
+            # the window goes now and the program ends when the sync has
+            self.statusBar().showMessage("Closing when the library sync finishes…")
+            self._closing = True
+            self.hide()
             event.ignore()
             return
         if self._export_process is not None:
@@ -815,12 +995,15 @@ class MainWindow(QMainWindow):
         if not self._stop_indexing(then=self.close) or not self._stop_decoding(then=self.close):
             event.ignore()  # the window closes itself once the worker has stopped
             return
+        self._save_view()
         super().closeEvent(event)
 
 
 def run() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
+    applog.configure()
     window = MainWindow()
+    applog.log_uncaught(window.problem.emit)
     window.show()
     sys.exit(app.exec())

@@ -383,7 +383,7 @@ def test_decode_worker_does_not_open_pdf(qapp, backup_root, monkeypatch):
     monkeypatch.setattr(gui, 'PdfUnderlay', refuse)
     worker = gui.DecodeWorker(doc, base_sizes={0: (595, 842), 1: (595, 842)})
     frames = []
-    worker.decoded.connect(lambda index, frame: frames.append(frame))
+    worker.decoded.connect(lambda token, index, frame: frames.append(frame))
     worker.run()
     assert len(frames) == len(doc.pages)
     assert all(f.underlay is not None for f in frames)
@@ -995,3 +995,211 @@ def test_pages_are_painted_at_the_displays_pixel_ratio(qapp, backup_root, monkey
     assert painted and painted[-1].devicePixelRatio() == 2.0
     assert painted[-1].width() == canvas.width() * 2 and painted[-1].height() == canvas.height() * 2
     canvas.deleteLater()
+
+
+def _run_until(qapp, done, seconds=20):
+    import time
+
+    deadline = time.monotonic() + seconds
+    while not done() and time.monotonic() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    qapp.processEvents()
+
+
+def test_worker_results_reach_the_window_on_its_own_thread(qapp, backup_root, monkeypatch):
+    """A lambda connected to a worker's signal runs on the worker's thread, and
+    the window's widgets may only be touched from the GUI thread."""
+    import threading
+
+    from remarksync.gui import MainWindow
+
+    gui_thread = threading.current_thread()
+    seen = {}
+
+    def note(name):
+        seen.setdefault(name, set()).add(threading.current_thread() is gui_thread)
+
+    # The slots themselves stay as they are (a stand-in would be connected
+    # differently); what is recorded is the thread each one touches widgets on.
+    from remarksync import viewer
+    set_frame, idle = viewer.PageCanvas.set_frame, MainWindow._index_idle
+    monkeypatch.setattr(viewer.PageCanvas, "set_frame", lambda self, frame: note("decoded") or set_frame(self, frame))
+    monkeypatch.setattr(MainWindow, "_index_idle", lambda self: note("finished") or idle(self))
+    monkeypatch.setattr(MainWindow, "_restore_state", lambda self: None)
+    win = MainWindow()
+    try:
+        show_progress = win.index_progress.setText
+        monkeypatch.setattr(win.index_progress, "setText", lambda text: note("progress") or show_progress(text))
+        win.open_folder(backup_root)
+        win.show_doc(next(d for d in win._library.documents if d.name == "Ink Notes"))
+        _wait_for_pages(qapp, win)
+        win.update_index()
+        _run_until(qapp, lambda: not win.is_indexing)
+        assert seen == {"decoded": {True}, "progress": {True}, "finished": {True}}
+        assert win.index_progress.text() == ""  # progress has its own corner, cleared when the run ends
+    finally:
+        win.close()
+
+
+def test_toolbar_leaves_the_search_box_in_view_and_everything_is_in_a_menu(qapp, monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QToolBar
+    from remarksync.gui import MainWindow
+
+    monkeypatch.setattr(MainWindow, "_restore_state", lambda self: None)
+    win = MainWindow()
+    try:
+        win.setAttribute(Qt.WA_DontShowOnScreen)
+        win.show()
+        qapp.processEvents()
+        bar = win.findChild(QToolBar)
+        assert bar.sizeHint().width() <= win.width() and win.search_box.isVisible()
+        in_menus = {a for menu in win.menuBar().actions() for a in menu.menu().actions()}
+        for act in (win.index_action, win.handwriting_action, win.removed_action, win.edit_action, win.export_action,
+                    win.pdf_column_action, win.results_dock.toggleViewAction()):
+            assert act in in_menus
+        win.focus_search()
+        win.search_box.setText("anything")
+        win.run_search()  # no library: says so instead of doing nothing
+        assert "Open a library" in win.statusBar().currentMessage()
+    finally:
+        win.close()
+
+
+def test_refreshing_keeps_the_tree_as_the_user_left_it(qapp, backup_root, monkeypatch):
+    """Automatic sync refreshes the tree every few minutes; it must not fold
+    it up or drop the selection each time."""
+    from remarksync.gui import MainWindow
+
+    monkeypatch.setattr(MainWindow, "_restore_state", lambda self: None)
+    win = MainWindow()
+    try:
+        win.open_folder(backup_root)
+        nodes = list(win._tree_nodes())
+        folder = next(n for n in nodes if n.childCount())
+        others = [win._node_key(n) for n in nodes if n.parent() is None and n is not folder]
+        assert folder.isExpanded()
+        folder.setExpanded(False)
+        picked = folder.child(0)
+        win.doc_tree.setCurrentItem(picked)
+        key, folder_key = win._node_key(picked), win._node_key(folder)
+
+        win._cloud_synced(str(backup_root), False)
+        after = {win._node_key(n): n for n in win._tree_nodes()}
+        assert not after[folder_key].isExpanded()  # stays folded, where a fresh tree would open it
+        assert win._node_key(win.doc_tree.currentItem()) == key
+        assert set(others) <= set(after)
+        assert not win.is_indexing  # nothing new arrived, nothing to index
+    finally:
+        win.close()
+
+
+def test_a_sync_that_brought_something_updates_an_existing_index(qapp, backup_root, monkeypatch):
+    from remarksync.gui import MainWindow
+
+    monkeypatch.setattr(MainWindow, "_restore_state", lambda self: None)
+    win = MainWindow()
+    try:
+        win.open_folder(backup_root)
+        win._cloud_synced(str(backup_root), True)
+        assert not win.is_indexing  # never indexed: the sync does not start that on its own
+        win.update_index()
+        _run_until(qapp, lambda: not win.is_indexing)
+        win._cloud_synced(str(backup_root), True)
+        assert win.is_indexing
+        _run_until(qapp, lambda: not win.is_indexing)
+        assert "Index updated" in win.statusBar().currentMessage()
+    finally:
+        win.close()
+
+
+def test_closing_during_a_sync_puts_the_window_away_and_ends_when_the_sync_does(qapp, monkeypatch):
+    from remarksync import cloudsync_dialog, gui
+
+    class Paired:
+        paired = True
+    monkeypatch.setattr(cloudsync_dialog, "CloudClient", Paired)
+    monkeypatch.setattr(gui.MainWindow, "_restore_state", lambda self: None)
+    quits = []
+    monkeypatch.setattr(gui.QApplication, "quit", staticmethod(lambda: quits.append(True)))
+    win = gui.MainWindow(cloud_autostart=False)
+    win.library_sync_action(show=False)
+    dialog = win._cloud_dialog
+    win.show()
+    dialog.process = object()
+    assert not win.close() and not win.isVisible() and quits == []
+    dialog.process = None
+    dialog.idle.emit()
+    assert quits == [True] and not win.isVisible()
+
+
+def test_sync_dialog_inside_the_window_can_be_put_away_during_a_sync(qapp, tmp_path, monkeypatch):
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QWidget
+    from remarksync import cloudsync_dialog
+
+    class Paired:
+        paired = True
+    monkeypatch.setattr(cloudsync_dialog, "CloudClient", Paired)
+    settings = QSettings(str(tmp_path / "cloud.ini"), QSettings.IniFormat)
+    alone = cloudsync_dialog.CloudSyncDialog(destination=tmp_path / "a", settings=settings, automatic=False)
+    alone.show()
+    alone.process = object()
+    alone.reject()  # Esc
+    assert alone.isVisible() and "Wait for" in alone.status.text()
+    alone.process = None
+    alone.close()
+
+    owner = QWidget()
+    inside = cloudsync_dialog.CloudSyncDialog(owner, destination=tmp_path / "b", settings=settings, automatic=False)
+    inside.show()
+    inside.process = object()
+    assert inside.close() and not inside.isVisible() and inside.process is not None
+    inside.process = None
+    owner.deleteLater()
+
+
+def test_painted_page_cache_is_bounded_by_memory(qapp):
+    from PySide6.QtGui import QPixmap
+    from remarksync.viewer import _PixmapCache
+
+    cache = _PixmapCache(capacity_bytes=100 * 100 * 4 * 3)
+    for owner in range(5):
+        cache.put((owner, 1.0, 1.0), QPixmap(100, 100))
+    assert [k[0] for k in cache._items] == [2, 3, 4]
+    cache.put((9, 1.0, 1.0), QPixmap(400, 400))  # bigger than the whole budget: still kept, alone
+    assert [k[0] for k in cache._items] == [9]
+
+
+def test_failures_stay_in_a_box_until_dismissed(qapp, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    from remarksync.gui import MainWindow
+
+    monkeypatch.setattr(MainWindow, "_restore_state", lambda self: None)
+    win = MainWindow()
+    try:
+        win._fail("Not sent: the cloud said no")
+        win.statusBar().showMessage("Indexing 1/3")  # the next message would have hidden it
+        boxes = win.findChildren(QMessageBox)
+        assert [b.text() for b in boxes] == ["Not sent: the cloud said no"] and not boxes[0].isHidden()
+        boxes[0].close()
+    finally:
+        win.close()
+
+
+def test_window_and_zoom_are_remembered(qapp, monkeypatch):
+    from remarksync import gui
+
+    win = gui.MainWindow(cloud_autostart=False)
+    win.resize(640, 480)  # inside the offscreen test display, which restoring will not exceed
+    win.zoom(+0.3)
+    zoomed = win._scale
+    assert win.close()
+    again = gui.MainWindow(cloud_autostart=False)
+    try:
+        assert (again.width(), again.height()) == (640, 480) and again._scale == zoomed
+        again.zoom(gui.DEFAULT_ZOOM - again._scale)
+        assert again._scale == gui.DEFAULT_ZOOM
+    finally:
+        again.close()

@@ -19,7 +19,8 @@ def sync_settings() -> QSettings:
 
 class CloudSyncDialog(QDialog):
     library_requested = Signal(str)
-    synced = Signal(str)
+    synced = Signal(str, bool)  # the raw library folder, and whether the sync brought anything new
+    idle = Signal()  # an operation has ended, whatever its outcome
 
     def __init__(self, parent=None, destination: Path | None = None, *, automatic: bool | None = None,
                  settings=None, source: str | None = None, server: str | None = None):
@@ -204,9 +205,10 @@ class CloudSyncDialog(QDialog):
             if result.get("last_success"):
                 message += f" Last full success: {result['last_success']}."
             self.status.setText(message)
-            self.synced.emit(result["raw_library"])
+            self.synced.emit(result["raw_library"], bool(result["downloaded"] or result["changed"]))
         self._update_open_buttons()
         self.schedule()
+        self.idle.emit()
 
     def show_library(self):
         path = str(self.destination / "raw")
@@ -222,9 +224,22 @@ class CloudSyncDialog(QDialog):
             self.library_window.show()
             self.show()
 
-    def closeEvent(self, event):
-        if self.process is not None:
+    def _holds_the_sync(self) -> bool:
+        """On its own the dialog is the program, and closing it would end a
+        running sync. Inside the main window it is only a view of the sync,
+        which carries on when the dialog is put away."""
+        if self.process is not None and self.parent() is None:
             self.status.setText("Wait for the current cloud sync to finish before closing.")
+            return True
+        return False
+
+    def reject(self):
+        # Esc arrives here without a close event, and so does the close button
+        if not self._holds_the_sync():
+            super().reject()
+
+    def closeEvent(self, event):
+        if self._holds_the_sync():  # a hidden dialog is not asked through reject()
             event.ignore()
         else:
             if self.parent() is None:

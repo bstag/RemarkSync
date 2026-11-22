@@ -70,18 +70,23 @@ class PdfUnderlay:
 
     def __init__(self, pdf_path, cache_bytes: int = 64 * 1024 * 1024):
         self.doc = fitz.open(pdf_path)
+        self._sizes: dict[int, tuple[float, float]] = {}
         self._cache: dict[tuple, QImage] = {}
         self._cache_bytes = cache_bytes
 
     def page_size(self, index: int | None) -> tuple[float, float] | None:
         """Base page size in PDF points (aspect ratio is what the layout uses)."""
-        if index is None or not 0 <= index < self.doc.page_count:
+        if index is None or self.doc.is_closed or not 0 <= index < self.doc.page_count:
             return None
-        rect = self.doc.load_page(index).rect
-        return float(rect.width), float(rect.height)
+        if index not in self._sizes:  # asked once to lay the document out and again by each canvas
+            rect = self.doc.load_page(index).rect
+            self._sizes[index] = float(rect.width), float(rect.height)
+        return self._sizes[index]
 
     def page_image(self, index: int | None, size: tuple[float, float]) -> QImage | None:
         """The base page rendered to fill ``size`` (tablet pixels)."""
+        if self.doc.is_closed:  # a canvas of the document just left can still be asked to paint
+            return None
         key = (index, size)
         if key in self._cache:
             img = self._cache.pop(key)
@@ -152,11 +157,19 @@ def _stroke_outline(stroke: Stroke) -> QPainterPath:
 class _PixmapCache:
     """A bounded, most-recently-used cache of painted pages. A heavy page
     (100k points) takes most of a second to paint; scrolling it back into
-    view should be a blit."""
+    view should be a blit.
 
-    def __init__(self, capacity: int = 16):
-        self._capacity = capacity
+    Bounded by memory, not by count: a page painted at full zoom on a dense
+    display is tens of megabytes, a thumbnail-sized one almost nothing. The
+    page just painted always stays, whatever its size."""
+
+    def __init__(self, capacity_bytes: int = 256 * 1024 * 1024):
+        self._capacity = capacity_bytes
         self._items: dict[tuple, QPixmap] = {}
+
+    @staticmethod
+    def _bytes(pix: QPixmap) -> int:
+        return pix.width() * pix.height() * 4
 
     def get(self, key: tuple) -> QPixmap | None:
         pix = self._items.pop(key, None)
@@ -167,7 +180,7 @@ class _PixmapCache:
     def put(self, key: tuple, pix: QPixmap) -> None:
         self._items.pop(key, None)
         self._items[key] = pix
-        while len(self._items) > self._capacity:
+        while len(self._items) > 1 and sum(self._bytes(p) for p in self._items.values()) > self._capacity:
             del self._items[next(iter(self._items))]
 
     def drop(self, owner: object) -> None:

@@ -433,13 +433,15 @@ class WindowsInkExtractor:
 
 
 def trocr_available() -> bool:
-    try:
-        import torch  # noqa: F401
-        import transformers  # noqa: F401
-        from PIL import Image  # noqa: F401
+    """Whether TrOCR's packages are installed. Looked up, not imported: the
+    window asks this on its own thread, and importing PyTorch takes from
+    seconds to most of a minute. The import itself happens when the model is
+    loaded, on the indexing worker."""
+    from importlib.util import find_spec
 
-        return True
-    except Exception:
+    try:
+        return all(find_spec(name) is not None for name in ("torch", "transformers", "PIL"))
+    except (ImportError, ValueError):
         return False
 
 

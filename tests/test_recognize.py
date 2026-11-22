@@ -193,3 +193,14 @@ def test_trocr_that_cannot_load_is_tried_once_per_run(tmp_path, backup_root):
     extractor = TrOCRExtractor(cache, model=flaky, min_strokes=1)
     assert extractor(source) == "" and extractor(source) == ""
     assert flaky.calls == 2 and extractor.tripped is None  # a loaded model that fails on a page is not switched off
+
+
+def test_asking_whether_trocr_is_installed_does_not_import_it():
+    """The window asks on its own thread; importing PyTorch there froze it."""
+    import sys
+
+    from remarksync.recognize import trocr_available
+
+    before = {name for name in ("torch", "transformers") if name in sys.modules}
+    assert trocr_available() in (True, False)
+    assert {name for name in ("torch", "transformers") if name in sys.modules} == before

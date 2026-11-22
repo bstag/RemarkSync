@@ -23,7 +23,13 @@ need (re)indexing, how a page becomes searchable text, and querying.
   conversions and, on Windows, ink recognition.
 * **Connections.** SQLite connections cannot cross threads, so every
   operation opens its own connection on the calling thread (WAL mode, so
-  readers never wait on the indexer). The schema is ensured once.
+  readers never wait on the indexer). The schema is ensured once per file.
+* **Names.** A document's name is its own column on every page, never part
+  of the page text, so a query can mix a name with a page's words. Pages that
+  match by name alone are answered as one hit for the document.
+* **Rows.** A document's pages are inserted together, so ``docs`` remembers
+  the rowid range they took and replacing a document deletes that range
+  instead of scanning every page for its uuid (which is not indexed).
 
 Each document commits on its own, so a cancelled or interrupted refresh
 keeps every document finished before it. No Qt dependencies here.
@@ -52,7 +58,9 @@ CREATE TABLE IF NOT EXISTS docs (
     file_type TEXT,
     page_count INTEGER,
     last_modified TEXT,
-    signature TEXT
+    signature TEXT,
+    first_row INTEGER,
+    last_row INTEGER
 );
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
@@ -103,6 +111,13 @@ class IndexReport:
 
 class PageDecodeError(ValueError):
     pass
+
+
+class SearchError(RuntimeError):
+    """The index could not answer a query (unreadable, damaged or locked)."""
+
+
+NAME_HIT = "(matches the document's name)"
 
 
 class _Cancelled(Exception):
@@ -190,16 +205,11 @@ class SearchIndex:
     def _extractor_fingerprint(self) -> str:
         """Names the current extractors, in order, so a change of recipe is
         visible to the next refresh."""
-        return "v2|" + "|".join(_extractor_name(ex) for ex in self.extractors)
+        return "v3|" + "|".join(_extractor_name(ex) for ex in self.extractors)
 
     def _insert_doc(self, conn: sqlite3.Connection, doc: DocItem, signature: str,
                     cancelled: Callable[[], bool] | None = None) -> int:
-        conn.execute(
-            "INSERT OR REPLACE INTO docs (uuid, name, file_type, page_count, last_modified, signature) "
-            "VALUES (?,?,?,?,?,?)",
-            (doc.uuid, doc.name, doc.file_type, len(doc.pages), doc.last_modified, signature),
-        )
-        count = 0
+        rows: list[int] = []
         for page in doc.pages:
             if cancelled is not None and cancelled():
                 raise _Cancelled
@@ -207,54 +217,82 @@ class SearchIndex:
             if model.error:
                 raise PageDecodeError(f"page {page.index + 1}: {model.error}")
             text = self.page_text_of(PageSource(doc, page, model))
-            # the doc name is searchable from every page
-            body = (doc.name + "\n" + text).strip()
-            if not body:
-                continue
-            conn.execute(
+            # every page gets a row, text or not: the name column makes the
+            # document findable from each of them
+            rows.append(conn.execute(
                 "INSERT INTO pages_fts (doc_uuid, page_no, name, text) VALUES (?,?,?,?)",
-                (doc.uuid, page.index, doc.name, body),
-            )
-            count += 1
-        return count
+                (doc.uuid, page.index, doc.name, text),
+            ).lastrowid)
+        # one writer, one transaction: the rowids are consecutive
+        first, last = (rows[0], rows[-1]) if rows else (0, -1)
+        conn.execute(
+            "INSERT OR REPLACE INTO docs (uuid, name, file_type, page_count, last_modified, signature, first_row, last_row) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (doc.uuid, doc.name, doc.file_type, len(doc.pages), doc.last_modified, signature, first, last),
+        )
+        return len(rows)
 
     @staticmethod
     def _delete_doc(conn: sqlite3.Connection, uuid: str) -> None:
-        conn.execute("DELETE FROM pages_fts WHERE doc_uuid = ?", (uuid,))
+        span = conn.execute("SELECT first_row, last_row FROM docs WHERE uuid = ?", (uuid,)).fetchone()
+        if span is not None and span[0] is not None:
+            conn.execute("DELETE FROM pages_fts WHERE rowid BETWEEN ? AND ?", span)
+        else:  # written before the range was recorded: find the pages the slow way
+            conn.execute("DELETE FROM pages_fts WHERE doc_uuid = ?", (uuid,))
         conn.execute("DELETE FROM docs WHERE uuid = ?", (uuid,))
 
     # ----------------------------------------------------------------- query
 
     def query(self, user_query: str, limit: int = 200) -> list[SearchHit]:
-        """Prefix-AND full-text search; empty query or no index gives no hits."""
+        """Prefix-AND full-text search; empty query or no index gives no hits.
+
+        A page whose own text matches is a hit. Pages that match only through
+        the document's name are one hit for that document, at its first such
+        page, so a notebook's name does not return every page of it. Raises
+        :class:`SearchError` when the index cannot be read.
+        """
         fts = _fts_query(user_query)
         if not fts or not self.exists:
             return []
-        conn = self._connect()
         try:
-            rows = conn.execute(
-                """
-                SELECT f.doc_uuid, d.name, f.page_no,
-                       snippet(pages_fts, 3, '«', '»', '…', 24)
-                FROM pages_fts f JOIN docs d ON d.uuid = f.doc_uuid
-                WHERE pages_fts MATCH ?
-                ORDER BY rank
-                LIMIT ?
-                """,
-                (fts, limit),
-            ).fetchall()
-            return [SearchHit(r[0], r[1] or "", r[2], r[3] or "") for r in rows]
-        except sqlite3.OperationalError as exc:
+            conn = self._connect()
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT f.doc_uuid, d.name, f.page_no,
+                           snippet(pages_fts, 3, '«', '»', '…', 24),
+                           instr(highlight(pages_fts, 3, char(1), ''), char(1)) > 0
+                    FROM pages_fts f JOIN docs d ON d.uuid = f.doc_uuid
+                    WHERE pages_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                    """,
+                    (fts, limit * 10),  # room for the name-only pages that fold into one hit
+                ).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
             log.warning("search failed for %r: %s", user_query, exc)
-            return []
-        finally:
-            conn.close()
+            raise SearchError(f"the search index could not be read: {exc}") from exc
+        hits: list[SearchHit] = []
+        by_name: dict[str, SearchHit] = {}
+        for uuid, name, page_no, snippet, in_text in rows:
+            if in_text:
+                hits.append(SearchHit(uuid, name or "", page_no, snippet or ""))
+            elif uuid in by_name:
+                by_name[uuid].page_no = min(by_name[uuid].page_no, page_no)
+            else:
+                by_name[uuid] = SearchHit(uuid, name or "", page_no, NAME_HIT)
+                hits.append(by_name[uuid])
+        return hits[:limit]
 
     # ------------------------------------------------------------ connection
 
     def _connect(self) -> sqlite3.Connection:
+        # a file that has gone (deleted while the app was open) needs its schema again
+        fresh = not self._schema_ready or not self.path.exists()
         conn = sqlite3.connect(self.path, timeout=10)
-        if not self._schema_ready:
+        if fresh:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(SCHEMA)
             _migrate(conn)
@@ -271,9 +309,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     re-read once and nothing stale is trusted.
     """
     columns = {row[1] for row in conn.execute("PRAGMA table_info(docs)")}
-    if columns and "signature" not in columns:
-        conn.execute("ALTER TABLE docs ADD COLUMN signature TEXT")
-        conn.commit()
+    for column, kind in (("signature", "TEXT"), ("first_row", "INTEGER"), ("last_row", "INTEGER")):
+        if columns and column not in columns:
+            conn.execute(f"ALTER TABLE docs ADD COLUMN {column} {kind}")
+    conn.commit()
 
 
 def _extractor_name(extractor: Extractor) -> str:
@@ -304,8 +343,12 @@ def _doc_signature(doc: DocItem) -> str:
 
 
 def _fts_query(user_query: str) -> str:
-    """Turn a free-text query into a safe FTS5 prefix-AND query."""
-    terms = [t for t in user_query.replace('"', " ").split() if t]
+    """Turn a free-text query into a safe FTS5 prefix-AND query.
+
+    A term with no letter or digit (a stray ``-`` or ``&``) has nothing the
+    index could hold; ANDed in, it would make the whole query match nothing.
+    """
+    terms = [t for t in user_query.replace('"', " ").split() if any(ch.isalnum() for ch in t)]
     if not terms:
         return ""
     return " AND ".join(f'"{t}"*' for t in terms)

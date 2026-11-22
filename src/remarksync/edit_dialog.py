@@ -230,7 +230,11 @@ class EditDialog(QDialog):
             return
         data = self._build(new_identity=True, name=Path(chosen).stem)
         if data is not None:
-            Path(chosen).write_bytes(data)
+            try:
+                Path(chosen).write_bytes(data)
+            except OSError as exc:
+                self.status.setText(f"Could not save {chosen}: {exc}")
+                return
             self._unsaved = False
             self.status.setText(f"Saved {chosen}. It imports as a new document, separate from the original.")
 
